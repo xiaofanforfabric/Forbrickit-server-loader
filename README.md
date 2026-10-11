@@ -40,6 +40,19 @@ Forbric is for the cases it cannot reach.
 
 ## How to install
 
+### Just want a server?
+
+One file, one command — no launcher, no installer, nothing to place by hand:
+
+```bash
+java -jar forbric-server.jar
+```
+
+The first run builds the game itself from public sources (a few minutes); after that it starts in seconds.
+World, `mods/` and `plugins/` live in the current directory, exactly like a vanilla server. See
+[`forbric-kernel-installer/STANDALONE.md`](forbric-kernel-installer/STANDALONE.md) for the options and why
+it has to build rather than ship the game.
+
 ### Before you start
 
 - **A launcher that starts versions from your `.minecraft/versions` folder.** Forbric has been tested

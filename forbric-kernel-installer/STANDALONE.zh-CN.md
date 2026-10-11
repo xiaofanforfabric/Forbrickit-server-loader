@@ -147,11 +147,38 @@ java -jar forbric-server.jar && echo "正常退出" || echo "异常退出 ($?)"
 
 ## 常见问题
 
+**首次运行合并失败，报 `Incompatible initializer dependency on ...ChunkGenerator#featuresPerStep`**
+→ 这一版还没下载 Minecraft 的 library 就去做合并，而合并要用它们解析外部类型。把 `--mc-dir` 指向一个**装好 Minecraft 26.2** 的目录（有 `libraries/`）即可：
+
+```bash
+java -jar forbric-server.jar --mc-dir ~/.minecraft
+```
+
+`--game-dir` 仍然放你的世界和 mods，两者可以不同。已经跑过 `dev.py prepare` 的目录也满足条件。**这是已知缺陷，下一版会修掉**（让 `ServerBootstrap` 自己下载 library）。
+
 **`no Java 25 or newer was found`**
 → 装个 JDK 25，或者 `--jdk /path/to/jdk25`。也可以先启动一次 Minecraft 26.2，让启动器把 runtime 下下来。
 
 **首次启动卡在 "merging"**
 → 正常。合并 88 MB 的字节码要一两分钟，输出里有 `[merge]` 前缀的进度。
+
+**下载卡住 / `maven.neoforged.net` 连不上**
+→ 需要代理。用 `JAVA_TOOL_OPTIONS`，**每一个** JVM 都会读它，包括构建期间 fork 出来的工具进程：
+
+```bash
+export JAVA_TOOL_OPTIONS="-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890 \
+                          -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890"
+java -jar forbric-server.jar
+```
+
+**`-D` 写在 `-jar` 后面没用** —— `-jar` 是终结符，它后面的一切都被当成程序参数：
+
+```bash
+java -jar -Dhttps.proxyHost=... forbric-server.jar   # ❌ 代理不生效
+java -Dhttps.proxyHost=... -jar forbric-server.jar   # ✅
+```
+
+而且父进程的 `-D` **不会**传给构建时 fork 的子进程，所以 `JAVA_TOOL_OPTIONS` 比 `-D` 更可靠。
 
 **构建失败，报 `merge-tools.jar` 找不到**
 → 这个 jar 打漏了，是构建问题。重新 `./gradlew standaloneJar`。

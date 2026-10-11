@@ -1,165 +1,199 @@
-# 独立服务端（`java -jar forbric-server.jar`）
+# Standalone server (`java -jar forbric-server.jar`)
 
-一个文件，一条命令，服务端起得来。首次启动会自己把游戏本体造出来。
+One file, one command, a server that runs. The first launch builds the game itself.
 
 ```bash
 java -jar forbric-server.jar
 ```
 
-就这样。世界、`mods/`、`plugins/` 都在当前目录，和原版服务端一样。
+That is all. The world, `mods/` and `plugins/` live in the current directory, exactly like a vanilla server.
 
 ---
 
-## 它会做什么
+## What it does
 
 ```
 java -jar forbric-server.jar
   │
-  ├─ 找 JDK 25+（先用当前 JVM，再找启动器的 runtime，最后找系统里的）
+  ├─ find a JDK 25+ (this JVM first, then the launcher's runtime, then the system's)
   │
-  ├─ 检查 <game-dir>/.forbric-kernel/staged/run/
-  │    ├─ 有 → 直接用（这就是"复用"）
-  │    └─ 没有 → 造：
-  │           下载 Minecraft 26.2 / MinecraftForge / NeoForge（公开源）
-  │           → 给两边打 patch
-  │           → 字节合并成 merged base
-  │           → link-check 质量门
+  ├─ check <game-dir>/.forbric-kernel/staged/run/
+  │    ├─ present → use it (this is the "reuse" path)
+  │    └─ absent  → build it:
+  │           download Minecraft 26.2 / MinecraftForge / NeoForge (public sources)
+  │           → patch both sides
+  │           → byte-merge into the merged base
+  │           → link-check gate
   │
-  ├─ 下载 API pin（fabric-api、team reborn energy），校验 SHA-256
+  ├─ download the API pins (fabric-api, team reborn energy), verify SHA-256
   │
-  └─ 起子 JVM 跑服务端
+  └─ start a child JVM on the server
 ```
 
-第一次要几分钟（下载几百 MB + 合并），**之后每次都是秒起**。
+The first run takes a few minutes (several hundred MB of downloads plus the merge). **Every run after that is
+seconds.**
 
 ---
 
-## 为什么它要自己造游戏
+## Why it has to build the game
 
-merged base（合并基底）里嵌着 Mojang、MinecraftForge、NeoForge 的代码。**没有合法途径随包分发**。
+The merged base embeds Mojang's, MinecraftForge's and NeoForge's code. There is **no lawful way to
+redistribute it.**
 
-所以一个能下载的 Forbric jar 只能**在你自己的机器上，从同样的公开源把它造出来**。这不是设计偷懒，是许可决定的。
+So a downloadable Forbric jar can only **build it on your own machine, from the same public sources**. That is
+not a shortcut in the design; it is what the licences allow.
 
-同理，这个 jar 里**不含**：
+For the same reason this jar contains **none** of:
+
 - `net.minecraft.*`
 - `net.minecraftforge.*`
 - `net/neoforged.*`
-- Paper API
+- the Paper API
 
-`standaloneJar` 任务里有断言，一旦打进去就直接构建失败。
+The `standaloneJar` task asserts each of those, and fails the build if one appears.
 
 ---
 
-## 选项
+## Options
 
 ```
---game-dir <dir>   世界 / mods / plugins / 缓存放哪（默认：当前目录）
---mc-dir <dir>     Minecraft 目录（含 libraries/ 和 versions/）（默认：= --game-dir）
---jdk <path>       用哪个 JDK 25+ 来构建和运行（默认：自动找）
---help             帮助
-
--- 之后的所有参数原样传给服务端
+--game-dir <dir>   where the world, mods, plugins and caches live (default: .)
+--mc-dir <dir>     the Minecraft directory holding libraries/ and versions/ (default: <game-dir>)
+--jdk <path>       a Java 25+ launcher or JDK home to build and run with (default: auto-detected)
+--help             this text
 ```
 
-例子：
+Everything after `--` is passed to the server unchanged.
 
 ```bash
-# 世界放别处，Minecraft 装在默认位置
+# world elsewhere, Minecraft in its default place
 java -jar forbric-server.jar --game-dir ~/my-server --mc-dir ~/.minecraft
 
-# 传服务端参数（端口、内存）
+# server options (port)
 java -jar forbric-server.jar -- --port 25566 --nogui
 ```
 
-`--nogui` 会自动加上（除非你已经写了）。
+`--nogui` is added automatically unless you write it yourself.
 
 ---
 
-## 目录布局
+## Directory layout
 
 ```
 <game-dir>/
-├── mods/                          ← Fabric / Forge / NeoForge 模组
-├── plugins/                       ← Bukkit / Paper 插件
-├── world/                         ← 世界
+├── mods/                          ← Fabric / Forge / NeoForge mods
+├── plugins/                       ← Bukkit / Paper plugins
+├── world/                         ← the world
 ├── server.properties
-├── eula.txt                       ← 首次要写 eula=true
-└── .forbric-kernel/               ← Forbric 的工作目录
-    ├── staged/run/                ← 游戏本体（造一次，复用）
+├── eula.txt                       ← write eula=true once
+└── .forbric-kernel/               ← Forbric's working directory
+    ├── staged/run/                ← the game (built once, reused)
     │   ├── merged-base/patched-mc-merged-26.2.jar
     │   ├── merged-base/forge-runtime-interop.jar
     │   └── neoforge-runtime/neoforge-runtime.jar
-    ├── libs/                      ← API pin（fabric-api、energy）
-    ├── kernel/                     ← 从 jar 里解出来的内核
+    ├── libs/                      ← the API pins (fabric-api, energy)
+    ├── kernel/                    ← the kernel, unpacked from this jar
     └── natives/
 
-<mc-dir>/.forbric-build/            ← 构建中间产物（Forge/NeoForge 的 patch 与合并）
+<mc-dir>/.forbric-build/            ← build intermediates (the Forge/NeoForge patches and the merge)
 ```
 
-**删掉 `<game-dir>/.forbric-kernel/` = 强制重建游戏本体。**
-删 `<mc-dir>/.forbric-build/` 则会连中间产物一起丢掉，重新下载。
+**Deleting `<game-dir>/.forbric-kernel/` forces a rebuild of the game.**
+Deleting `<mc-dir>/.forbric-build/` throws away the intermediates too, and they are downloaded again.
 
 ---
 
-## 复用已有产物
+## Reusing what you already have
 
-`dev.py prepare` 造出来的东西就是同一套布局。所以：
+`dev.py prepare` produces exactly the same layout. So:
 
 ```bash
-# 已经跑过 dev.py prepare 的机器，可以直接指过去
-java -jar forbric-server.jar --game-dir forbric-kernel/.dev/server --mc-dir ~/桌面/.minecraft
+# a machine that has already run dev.py prepare can point straight at it
+java -jar forbric-server.jar --game-dir forbric-kernel/.dev/server --mc-dir ~/.minecraft
 ```
 
-它会发现 `staged/run/` 已经齐了，跳过构建，直接启动。
-
-反过来也成立：`standaloneJar` 造出来的产物，`dev.py` 也认。
+It finds `staged/run/` already complete, skips the build, and starts. The reverse holds too: what
+`standaloneJar` produces, `dev.py` accepts.
 
 ---
 
-## 服务端参数
+## Server options
 
 ```
---nogui            不开图形控制台（已默认加）
---port <n>         端口（默认 25565）
---serverIp <ip>    绑定地址
---world <dir>      世界目录名
---bonusChest       新世界送箱子
---forceUpgrade     强制升级世界格式
+--nogui            no graphical console (added by default)
+--port <n>         port (default 25565)
+--serverIp <ip>    bind address
+--world <dir>      world directory name
+--bonusChest       a bonus chest on a new world
+--forceUpgrade     force the world format upgrade
 ```
 
-不确定的用 `--help`，或者直接跑一次看输出。
+Run with `--help`, or just start it once and read the output.
 
 ---
 
-## 退出码
+## Exit codes
 
-子进程的退出码**原样透传**。所以：
+The child's exit code is passed through unchanged, so:
 
 ```bash
-java -jar forbric-server.jar && echo "正常退出" || echo "异常退出 ($?)"
+java -jar forbric-server.jar && echo "clean exit" || echo "failed ($?)"
 ```
 
-行为和其他服务端一致。
+It behaves like any other server.
 
 ---
 
-## 常见问题
+## Common problems
+
+**The first run fails at the merge with `Incompatible initializer dependency on ...ChunkGenerator#featuresPerStep`**
+→ This build does not yet download Minecraft's libraries before merging, and the merge needs them to resolve
+external types. Point `--mc-dir` at a directory with **Minecraft 26.2 installed** (it must have `libraries/`):
+
+```bash
+java -jar forbric-server.jar --mc-dir ~/.minecraft
+```
+
+`--game-dir` still holds your world and mods; the two may differ. A directory that has already run
+`dev.py prepare` also qualifies. **This is a known defect and the next release fixes it** (by having
+`ServerBootstrap` download the libraries itself).
 
 **`no Java 25 or newer was found`**
-→ 装个 JDK 25，或者 `--jdk /path/to/jdk25`。也可以先启动一次 Minecraft 26.2，让启动器把 runtime 下下来。
+→ Install a JDK 25, or pass `--jdk /path/to/jdk25`. Starting Minecraft 26.2 once also works: the launcher
+then downloads its own runtime.
 
-**首次启动卡在 "merging"**
-→ 正常。合并 88 MB 的字节码要一两分钟，输出里有 `[merge]` 前缀的进度。
+**The first run sits at "merging"**
+→ Normal. Merging 88 MB of bytecode takes a minute or two; the progress lines carry a `[merge]` prefix.
 
-**构建失败，报 `merge-tools.jar` 找不到**
-→ 这个 jar 打漏了，是构建问题。重新 `./gradlew standaloneJar`。
+**Downloads hang, or `maven.neoforged.net` is unreachable**
+→ You need a proxy. Use `JAVA_TOOL_OPTIONS`: **every** JVM reads it, including the tool processes the build
+forks:
 
-**想关掉 Bukkit 插件桥**
-→ `-Dforbric.bukkitBridge=off`。
+```bash
+export JAVA_TOOL_OPTIONS="-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890 \
+                          -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890"
+java -jar forbric-server.jar
+```
+
+**`-D` after `-jar` does nothing** — `-jar` is a terminator, and everything after it is a program argument:
+
+```bash
+java -jar -Dhttps.proxyHost=... forbric-server.jar   # ❌ no proxy
+java -Dhttps.proxyHost=... -jar forbric-server.jar   # ✅
+```
+
+And the parent's `-D` is **not** inherited by the child processes the build forks, which is why
+`JAVA_TOOL_OPTIONS` is more reliable than `-D`.
+
+**The build fails with "merge-tools.jar not found"**
+→ The jar is missing from the launcher, which is a build problem. Re-run `./gradlew standaloneJar`.
+
+**Turn off the Bukkit plugin bridge**
+→ `-Dforbric.bukkitBridge=off`.
 
 ---
 
-## 从源码构建
+## Building it from source
 
 ```bash
 cd forbric-kernel-installer
@@ -172,20 +206,25 @@ M=$(pwd)/..
   -Pforbric.rebornEnergy=$M/forbric-kernel/.dev/api/energy-5.0.0.jar
 ```
 
-产物：`build/libs/forbric-server.jar`（约 8.5 MB）
+Output: `build/libs/forbric-server.jar` (about 8.5 MB)
 
-那四个 `-P` 是 kernel 的游戏侧编译需要的（`forbric.stagedRoot` 等）；`buildForbricJars` 会把它们透传给 kernel 的构建。
+Those four `-P` are what the kernel's game side needs to compile (`forbric.stagedRoot` and friends);
+`buildForbricJars` passes them through to the kernel build.
 
 ---
 
-## 架构说明（为什么是子进程）
+## Why a child process
 
-`java -jar` 只把**一个** jar 放上 classpath。但一次内核启动需要：
+`java -jar` puts exactly **one** jar on the classpath. But a kernel launch needs:
 
-- merged base（游戏本体）
-- MC 的 71 个 library jar
-- 内核与它的 boot 依赖
+- the merged base (the game)
+- Minecraft's 71 library jars
+- the kernel and its boot dependencies
 
-而 `DelegationPolicy.ALWAYS_PARENT` 要求某些内核类**必须**从系统加载器来（ASM、Mixin、log4j、vendored Fabric API）。自建 `URLClassLoader` 会把这些定义到别处，内核就同时持有两份自己赖以运转的类——正是它 boot/game 分离要防的事。
+and `DelegationPolicy.ALWAYS_PARENT` requires some kernel classes to come from the **system** loader (ASM,
+Mixin, log4j, the vendored Fabric API). Standing up a `URLClassLoader` would define those somewhere else, and
+the kernel would then hold two copies of the classes it is built around — exactly the failure its boot/game
+split exists to prevent.
 
-子 JVM 天然拿到正确的 classpath，给不错。代价是多一个进程，而启动器本来就是个进程。
+A child JVM gets the right classpath for free and cannot be got wrong. The cost is one more process, and a
+launcher is a process anyway.

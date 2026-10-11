@@ -22,6 +22,17 @@ Connector 已经很成熟，Forbric 还不是，所以如果 Connector 已经能
 
 ## 安装方法
 
+### 只想要个服务端？
+
+一个文件，一条命令 —— 不用启动器、不用安装器、不用手工放任何东西：
+
+```bash
+java -jar forbric-server.jar
+```
+
+首次运行会自己从公开源把游戏本体构建出来（几分钟），之后每次都是秒起。世界、`mods/`、`plugins/` 都在当前目录，和原版服务端一样。选项说明、以及为什么必须是"构建"而不是"附带"，见
+[`forbric-kernel-installer/STANDALONE.zh-CN.md`](forbric-kernel-installer/STANDALONE.zh-CN.md)。
+
 ### 准备工作
 
 - **一个从 `.minecraft/versions` 文件夹启动版本的启动器。** Forbric 已在 Windows 上用 **PCL2** 测试过。HMCL 读取的是同样的文件，应该也能用，但还没有测试过。官方 Minecraft 启动器也还没有测试过（见第 6 步）。Prism Launcher 和 MultiMC 使用各自独立的实例，看不到 Forbric。
