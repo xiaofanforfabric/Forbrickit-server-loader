@@ -1,0 +1,203 @@
+/*
+ * Forbric Bukkit bridge — an {@code org.bukkit.World} backed by a Minecraft {@code ServerLevel}.
+ * *** GENERATED FILE — DO NOT EDIT ***
+ *
+ * Produced by tools/gen_stub.py from tools/stubs/ForbricWorld.table. Edits belong in the table or this template.
+ */
+package {{package}};
+
+/**
+ * One loaded world, as a plugin sees it.
+ *
+ * <p>Every method {@code org.bukkit.World} declares is present; the ones with real meaning read from the
+ * {@code ServerLevel} this wraps, and the rest refuse with a named exception. A refusal is deliberate: a stub
+ * returning a plausible wrong value (an empty chunk, a zero difficulty) is far harder to trace than a message
+ * that names the method.
+ *
+ * <p><b>Time is not where it used to be.</b> Through 1.21 the game kept one {@code dayTime} on the level, reached
+ * with {@code getDayTime()}/{@code setDayTime()}. 26.2 replaced that with named clocks
+ * ({@code net.minecraft.world.clock}): the overworld's is {@code Level.getOverworldClockTime()}, a dimension's
+ * own is {@code getDefaultClockTime()}, and writing one goes through
+ * {@code ServerClockManager.setTotalTicks(Holder<WorldClock>, long)}. None of the old names still exists, which
+ * is how this was found — every one of them is a compile error.
+ *
+ * <p>Coordinates need no conversion, and that is worth stating rather than leaving implied: Bukkit's
+ * {@code (x, y, z)} and Minecraft's {@code BlockPos} are both world-absolute and both count y upward from the
+ * bottom of the world. What DOES come from the dimension rather than a constant is the height range.
+ */
+final class {{class}} implements {{interface}} {
+
+	private final net.minecraft.server.level.ServerLevel level;
+	private final ServerImpl server;
+
+	private {{class}}(net.minecraft.server.level.ServerLevel level, ServerImpl server) {
+		this.level = level;
+		this.server = server;
+	}
+
+	/**
+	 * Wraps a level. The one place a {@code ServerLevel} becomes an {@code org.bukkit.World}.
+	 *
+	 * <p>A fresh wrapper per call rather than a cache: two wrappers for one level are equal through
+	 * {@link #equals} and hash alike, so nothing downstream can tell them apart — and a cache would need
+	 * invalidating when a level unloads, which is a correctness problem bought for nothing.
+	 */
+	static {{class}} of(net.minecraft.server.level.ServerLevel level, ServerImpl server) {
+		return new {{class}}(level, server);
+	}
+
+	/** The wrapped level, for the bridge's own use by {@link ForbricBlock} and the event layer. */
+	net.minecraft.server.level.ServerLevel level() {
+		return level;
+	}
+
+	private static UnsupportedOperationException notYet(String what) {
+		return new UnsupportedOperationException(
+				"[Forbric/Bukkit] World." + what + "() is not implemented by this bridge yet");
+	}
+
+	/**
+	 * The world's name, as Bukkit knows it: the folder it is stored under.
+	 *
+	 * <p>Minecraft names a dimension with a {@code ResourceKey} ({@code minecraft:overworld}); Bukkit names a
+	 * world with the folder in {@code saves/} ({@code world}). The key's path half is what a plugin writes when
+	 * it says {@code getWorld("world")}, and it is the half that stays put when a datapack moves a dimension
+	 * between namespaces.
+	 */
+	@Override
+	public String getName() {
+		return level.dimension().identifier().getPath();
+	}
+
+	/**
+	 * A stable id, derived from the dimension rather than generated.
+	 *
+	 * <p>Bukkit hands a world a UUID and a plugin may save it. Deriving it from the dimension key means a saved
+	 * reference resolves again after a restart; a random one would not, and would look correct until the second
+	 * launch.
+	 */
+	@Override
+	public java.util.UUID getUID() {
+		return java.util.UUID.nameUUIDFromBytes(
+				("forbric:world:" + level.dimension().identifier()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+	}
+
+	@Override
+	public int getMinHeight() {
+		return level.getMinY();
+	}
+
+	@Override
+	public int getMaxHeight() {
+		// Bukkit's is exclusive, Minecraft's inclusive. Off by one here puts a plugin's top-of-world loop one
+		// block above the world, where every write is accepted and discarded.
+		return level.getMaxY() + 1;
+	}
+
+	@Override
+	public int getSeaLevel() {
+		return level.getSeaLevel();
+	}
+
+	@Override
+	public long getTime() {
+		// Bukkit's getTime() is the time of day, 0..24000, on THIS dimension's clock. Reporting the overworld's
+		// clock here would make a plugin's day/night logic wrong in the Nether and the End — the two dimensions
+		// where it is least visibly wrong and so hardest to notice.
+		return Math.floorMod(level.getDefaultClockTime(), 24000L);
+	}
+
+	@Override
+	public void setTime(long time) {
+		// Set the time OF DAY, keeping the day count: Bukkit's setTime(6000) means noon today, not noon on day
+		// zero. A clock is one long, so the day is its high part and the time of day its low one.
+		long current = level.getDefaultClockTime();
+		long day = current - Math.floorMod(current, 24000L);
+		level.clockManager().setTotalTicks(clock(),
+				day + Math.floorMod(time, 24000L));
+	}
+
+	@Override
+	public long getFullTime() {
+		// The whole clock, day count included — what a plugin compares to notice that time moved backwards.
+		return level.getDefaultClockTime();
+	}
+
+	@Override
+	public void setFullTime(long time) {
+		level.clockManager().setTotalTicks(clock(), time);
+	}
+
+	@Override
+	public boolean isDayTime() {
+		// Computed, because 26.2 has no day/night predicate to delegate to: the game decides light from the sky
+		// darkening value, and the clock is a separate concern. Bukkit's own contract is the 0..12000 window, so
+		// that is what this answers — a plugin comparing it against Bukkit's documentation gets what it expects.
+		return getTime() < 12000L;
+	}
+
+	@Override
+	public org.bukkit.Difficulty getDifficulty() {
+		return switch (level.getDifficulty()) {
+			case PEACEFUL -> org.bukkit.Difficulty.PEACEFUL;
+			case EASY -> org.bukkit.Difficulty.EASY;
+			case NORMAL -> org.bukkit.Difficulty.NORMAL;
+			case HARD -> org.bukkit.Difficulty.HARD;
+		};
+	}
+
+	@Override
+	public org.bukkit.Location getSpawnLocation() {
+		// Bukkit's Location wants a block's centre on x and z and its floor on y. Handing it the raw BlockPos
+		// puts a teleport in a corner of the block rather than at the spawn point the game would use.
+		net.minecraft.core.BlockPos spawn = level.getRespawnData().pos();
+		return new org.bukkit.Location(this, spawn.getX() + 0.5, spawn.getY(), spawn.getZ() + 0.5);
+	}
+
+	@Override
+	public org.bukkit.block.Block getBlockAt(int x, int y, int z) {
+		return ForbricBlock.at(this, x, y, z);
+	}
+
+	@Override
+	public java.util.List<org.bukkit.entity.Player> getPlayers() {
+		java.util.List<org.bukkit.entity.Player> players = new java.util.ArrayList<>();
+		for (net.minecraft.server.level.ServerPlayer player : level.getPlayers(ignored -> true)) {
+			players.add(ForbricPlayer.of(player, server));
+		}
+		return players;
+	}
+
+	@Override
+	public boolean equals(Object other) {
+		return other instanceof ForbricWorld world && world.level == level;
+	}
+
+	@Override
+	public int hashCode() {
+		return level.hashCode();
+	}
+
+	@Override
+	public String toString() {
+		return "ForbricWorld[" + level.dimension().identifier() + "]";
+	}
+
+	/**
+	 * The overworld clock, as the {@code Holder} {@code setTotalTicks} takes.
+	 *
+	 * <p>Resolved through the running server's registry access, not a static constant: the clock registry is a
+	 * datapack registry, so it exists once the server is up and not before, and a static reach lands on a
+	 * registry the game never populated.
+	 *
+	 * <p>{@code OVERWORLD} rather than the dimension's own clock because that is the clock a plugin means by
+	 * "the time": 26.2 lets a dimension have its own, and Bukkit has one number. Choosing the overworld's makes
+	 * {@code setTime(6000)} mean noon in the world a plugin is almost always thinking of.
+	 */
+	private net.minecraft.core.Holder<net.minecraft.world.clock.WorldClock> clock() {
+		return server.minecraft().registryAccess()
+				.lookupOrThrow(net.minecraft.core.registries.Registries.WORLD_CLOCK)
+				.getOrThrow(net.minecraft.world.clock.WorldClocks.OVERWORLD);
+	}
+
+{{methods}}}

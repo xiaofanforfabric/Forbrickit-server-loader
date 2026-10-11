@@ -572,17 +572,42 @@ tasks.register('runtimeJar', Jar) {
 		// ...and its ServiceLoader descriptors, without which paper-api's `ServiceLoader.load(X.class, ...)`
 		// resolves no provider and every JavaPlugin construction dies inside a static initialiser. They must be
 		// in THIS jar: the interface they name is game-side, so only this loader can see them.
-		def descriptors = ['io.papermc.paper.InternalAPIBridge', 'org.bukkit.plugin.PluginLoader']
+		// Every provider this bridge registers, named one by one. A missing one is silent at build
+		// time and fatal at run time: `ServiceLoader.load(X.class, ...)` finds no provider, the
+		// orElseThrow inside Paper's own accessor throws, and the consumer dies in a static initialiser
+		// with a message that names neither the service nor this jar. ServerBuildInfo is the one that bit
+		// a plugin in the field -- Bukkit.setServer() calls through it -- and the lifecycle provider is
+		// what a modern plugin's command registration needs before it can even construct.
+		def descriptors = ['io.papermc.paper.InternalAPIBridge', 'org.bukkit.plugin.PluginLoader',
+				'io.papermc.paper.ServerBuildInfo',
+				'io.papermc.paper.plugin.lifecycle.event.types.LifecycleEventTypeProvider',
+				'io.papermc.paper.command.brigadier.argument.VanillaArgumentProvider']
 				.collect { "META-INF/services/${it}".toString() }.findAll { !entries.contains(it) }
 		if (descriptors) throw new GradleException("forbric-kernel-runtime.jar was built without its Bukkit bridge provider files: ${descriptors}")
 		// Paper's API is compiled against and never shipped, exactly like Team Reborn Energy and Fabric API's
 		// transfer modules -- and for a stronger reason: some of it is copyleft.
-		def paperApi = entries.findAll { it.startsWith('org/bukkit/') || it.startsWith('io/papermc/paper/') }
+		//
+		// Five classes are exempt, and the exemption is not a loophole. Paper declares some of its provider
+		// interfaces PACKAGE-PRIVATE, so an implementation has to live in Paper's package to be found at
+		// all -- that is how Paper's own server jar ships its provider. These are OUR implementations of
+		// those interfaces, not Paper's classes, and every other file under org/bukkit or io/papermc is
+		// still refused.
+		def ours = ['io/papermc/paper/plugin/lifecycle/event/types/ForbricLifecycleEventTypeProvider.class',
+				'io/papermc/paper/plugin/lifecycle/event/types/ForbricPrioritizableEventType.class',
+				'io/papermc/paper/plugin/lifecycle/event/types/ForbricMonitorableEventType.class',
+				'io/papermc/paper/plugin/lifecycle/event/types/ForbricTagEventTypeProvider.class',
+				'io/papermc/paper/command/brigadier/argument/ForbricVanillaArgumentProvider.class']
+		def paperApi = entries.findAll { (it.startsWith('org/bukkit/') || it.startsWith('io/papermc/paper/'))
+				// Directory entries are not code: a zip records every parent directory of a file it holds,
+				// so keeping one package puts bare "io/papermc/paper/" entries in the jar. They carry no
+				// classes and cannot be what the rule is about.
+				&& !it.endsWith('/')
+				&& !ours.contains(it) }
 		if (paperApi) throw new GradleException("forbric-kernel-runtime.jar must not bundle the Paper API: ${paperApi.take(3)}")
 	}
 }
 
-// The classpath tools/gen_server_stub.py needs: every type the Paper `Server` interface mentions, so javap can
+// The classpath tools/gen_stub.py needs: every type the Bukkit interfaces it reads mention, so javap can
 // read it. Not the compile classpath -- that carries the whole game (Mojang/Forge/Neo jars, Minecraft's own
 // libraries), which javap neither needs nor benefits from, and whose paths would tie the generator to a prepared
 // machine. What it needs is paper-api and the adventure jars its signatures name, and those are exactly the
@@ -590,7 +615,7 @@ tasks.register('runtimeJar', Jar) {
 //
 // Same shape as printBootClasspath: one line on stdout, so a shell can pipe it straight into the generator.
 tasks.register('printBukkitApiClasspath') {
-	description = 'Prints the classpath tools/gen_server_stub.py uses to read the Paper Server interface.'
+	description = 'Prints the classpath tools/gen_stub.py uses to read the Bukkit API interfaces.'
 	def paperApiClasspath = configurations.runtimeCompileClasspath
 	doLast {
 		println paperApiClasspath.files.findAll { it.name.endsWith('.jar') }

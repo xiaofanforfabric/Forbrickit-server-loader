@@ -2,6 +2,17 @@
 
 English | [简体中文](introduction.zh-CN.md)
 
+> **Note for this fork (Forbrickit).** This document describes the Forbric kernel, which Forbrickit is a
+> fork of, and is kept as written upstream — the architecture it explains is the one this fork inherits.
+> Forbrickit adds a fourth ecosystem on top: a Bukkit/Paper plugin bridge carried on the game side of the
+> kernel. That addition is documented in the project [README](README.md) and in
+> [`forbric-kernel/README.md`](forbric-kernel/README.md).
+>
+> **This fork is server-side only.** Everything below about the *client* is upstream Forbric's client: it
+> is still in the tree, because this fork adapts the server and did not delete what it was not changing,
+> but it is out of scope and unmaintained here, and it must not be used to build a client. For the
+> client, use the [Forbric repository](https://github.com/Ray-T-r/Minecraft-Forbric-mod-loader).
+
 For mod and loader developers. This document is precise rather than gentle: it states what Forbric does, in the
 order it does it, naming the real types and files. It describes the **`main` branch**, not a release; for what a
 release contains and how a player installs it, read the [README](README.md).

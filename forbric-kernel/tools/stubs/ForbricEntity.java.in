@@ -1,0 +1,173 @@
+/*
+ * Forbric Bukkit bridge — an entity that is not a player.
+ * *** GENERATED FILE — DO NOT EDIT ***
+ *
+ * Produced by tools/gen_stub.py from tools/stubs/ForbricEntity.table. Edits belong in the table or this template.
+ */
+package {{package}};
+
+/**
+ * A game entity, as a plugin sees it.
+ *
+ * <p><b>Not a full {@code Entity} implementation, and it says so.</b> Bukkit's {@code Entity} is a large
+ * interface covering inventory-holders, projectiles, mobs and everything else; the parts a command source needs
+ * are identity, position and the world. Those are answered, and the rest of the interface refuses with a named
+ * exception — a plugin calling {@code getFireTicks()} is told the bridge does not implement it yet rather than
+ * being handed a plausible wrong answer.
+ *
+ * <p><b>Why this class exists at all.</b> A command's source is often an entity that is not a player — a mob ran
+ * a function, {@code @e} resolved by an argument, a command block's marker armour stand. Paper's
+ * {@code CommandSourceStack.getEntityOrThrow()} has to return one, and an argument resolver needs the game's own
+ * entity back. A wrapper that keeps the {@code net.minecraft} object is the only thing that can satisfy both.
+ */
+final class {{class}} implements {{interface}} {
+
+        private final net.minecraft.world.entity.Entity entity;
+        private final ServerImpl server;
+
+        private {{class}}(net.minecraft.world.entity.Entity entity, ServerImpl server) {
+                this.entity = entity;
+                this.server = server;
+        }
+
+        /**
+         * Wraps a game entity. The one place a {@code net.minecraft.world.entity.Entity} becomes a Bukkit entity.
+         *
+         * <p>A player becomes a {@link ForbricPlayer} instead, because that is what a plugin will cast the result
+         * to — and a {@code Player} failing an {@code instanceof Player} check would be a worse answer than none.
+         */
+        static org.bukkit.entity.Entity of(net.minecraft.world.entity.Entity entity, ServerImpl server) {
+                if (entity instanceof net.minecraft.server.level.ServerPlayer player) {
+                        return ForbricPlayer.of(player, server);
+                }
+                return new {{class}}(entity, server);
+        }
+
+        /** The game's own entity, for the bridge's use — command arguments resolve against it. */
+        net.minecraft.world.entity.Entity entity() {
+                return entity;
+        }
+
+        private static UnsupportedOperationException notYet(String what) {
+                return new UnsupportedOperationException(
+                                "[Forbric/Bukkit] Entity." + what + "() is not implemented by this bridge yet");
+        }
+
+        @Override
+        public java.util.UUID getUniqueId() {
+                return entity.getUUID();
+        }
+
+        @Override
+        public org.bukkit.Location getLocation() {
+                net.minecraft.world.phys.Vec3 position = entity.position();
+                return new org.bukkit.Location(world(), position.x(), position.y(), position.z(),
+                                entity.getYRot(), entity.getXRot());
+        }
+
+        @Override
+        public org.bukkit.World getWorld() {
+                return world();
+        }
+
+        /** The level this entity is in, wrapped. Shared by the position and world accessors. */
+        private ForbricWorld world() {
+                return ForbricWorld.of((net.minecraft.server.level.ServerLevel) entity.level(), server);
+        }
+
+        @Override
+        public boolean isDead() {
+                return !entity.isAlive();
+        }
+
+        @Override
+        public boolean isValid() {
+                return entity.isAlive() && !entity.isRemoved();
+        }
+
+        /**
+         * The entity's type, as a Bukkit enum constant.
+         *
+         * <p>Read through the registry id, the same bridge {@link ForbricBlock#getType()} uses: the id is stable
+         * across versions where an ordinal is not, and {@code EntityType} is named after the same id.
+         */
+        @Override
+        public org.bukkit.entity.EntityType getType() {
+                net.minecraft.resources.Identifier id =
+                                net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType());
+                try {
+                        return org.bukkit.entity.EntityType.valueOf(id.getPath().toUpperCase(java.util.Locale.ROOT));
+                } catch (IllegalArgumentException unknown) {
+                        // A mod-added entity, or one newer than this bridge's copy of the API knows. Naming it
+                        // beats answering UNKNOWN, which would look like a real type.
+                        throw notYet("getType() for entity " + id);
+                }
+        }
+
+        /** Refuses: the Spigot view is a legacy surface this bridge does not build. */
+        @Override
+        public org.bukkit.entity.Entity.Spigot spigot() {
+                throw notYet("spigot()");
+        }
+
+        @Override
+        public java.util.List<org.bukkit.entity.Entity> getPassengers() {
+                java.util.List<org.bukkit.entity.Entity> wrapped = new java.util.ArrayList<>();
+                for (net.minecraft.world.entity.Entity passenger : entity.getPassengers()) {
+                        wrapped.add(of(passenger, server));
+                }
+                return wrapped;
+        }
+
+        @Override
+        public boolean addPassenger(org.bukkit.entity.Entity passenger) {
+                if (!(passenger instanceof ForbricEntity forbric)) {
+                        throw new IllegalArgumentException("[Forbric/Bukkit] Entity.addPassenger() needs an entity "
+                                        + "this bridge produced, got " + passenger);
+                }
+                // Three arguments, not two: the game's two-argument form does not exist, and the third is
+                // "force" -- a passenger that refuses (a player with a dismount flag) still gets seated,
+                // which is what Bukkit's addPassenger promises.
+                return forbric.entity().startRiding(entity, true, true);
+        }
+
+        @Override
+        public boolean removePassenger(org.bukkit.entity.Entity passenger) {
+                if (!(passenger instanceof ForbricEntity forbric)) {
+                        return false;
+                }
+                if (!entity.getPassengers().contains(forbric.entity())) {
+                        return false;
+                }
+                forbric.entity().stopRiding();
+                return true;
+        }
+
+        /**
+         * Equal to any other handle on the same entity.
+         *
+         * <p>By the game's entity object, not by identity or by UUID alone: one wrapper is handed out from several
+         * places (a command source, a world, an event) and a plugin must be able to compare the results.
+         */
+        @Override
+        public boolean equals(Object other) {
+                if (this == other) {
+                        return true;
+                }
+                if (!(other instanceof {{class}})) {
+                        return false;
+                }
+                return entity == (({{class}}) other).entity;
+        }
+
+        @Override
+        public int hashCode() {
+                return System.identityHashCode(entity);
+        }
+
+        @Override
+        public String toString() {
+                return "{{class}}[" + entity.getUUID() + "]";
+        }
+
+{{methods}}}
