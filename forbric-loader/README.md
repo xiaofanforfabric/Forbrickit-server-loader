@@ -2,6 +2,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
+> This is the **first-generation** loader, kept in the Forbrickit fork as a differential oracle and
+> still built by CI. The current loader is [`forbric-kernel/`](../forbric-kernel/README.md).
+
 A **clean-room unified Minecraft mod loader** that loads **Fabric** mods (`fabric.mod.json`) and both
 **Forge-family** kinds — traditional MinecraftForge (`META-INF/mods.toml`) and NeoForge
 (`META-INF/neoforge.mods.toml`) — in one Minecraft 26.2 instance.

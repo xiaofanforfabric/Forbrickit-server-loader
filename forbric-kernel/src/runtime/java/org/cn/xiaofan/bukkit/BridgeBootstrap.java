@@ -56,15 +56,54 @@ public final class BridgeBootstrap {
 	 * @param loader the loader that defined the bridge — plugins take it as their parent, so a plugin sees the
 	 *               same {@code org.bukkit} classes this bridge implements
 	 */
-	public static BridgeBootstrap start(Path pluginsFolder, Path dataFolder, ClassLoader loader) throws IOException {
+	public static BridgeBootstrap start(Path pluginsFolder, Path dataFolder, ClassLoader loader, Object server)
+			throws IOException {
 		Logger logger = createLogger();
+		// The running MinecraftServer, wrapped so every org.bukkit.World a plugin asks for reaches a real
+		// ServerLevel. Typed Object at the seam and narrowed here, where the game types are linked anyway.
+		net.minecraft.server.MinecraftServer minecraft =
+				server instanceof net.minecraft.server.MinecraftServer running ? running : null;
+		if (minecraft == null) {
+			logger.warning("no running server was handed to the bridge; plugins that touch a world or a player "
+					+ "will find none (this is a wiring fault, not a plugin fault)");
+		}
 		// No PluginManager yet: paper-api's SimplePluginManager is final and its constructor needs a Server, so
 		// building one here would be a cycle. ServerImpl answers getPluginManager() with null, which is honest —
 		// nothing has registered a listener with it. The first plugin that needs it will be the reason to build it.
-		ServerImpl server = new ServerImpl(logger, null, pluginsFolder, "26.2-forbric-bridge");
-		BridgeBootstrap bridge = new BridgeBootstrap(pluginsFolder, logger, server, loader);
+		ServerImpl serverImpl = new ServerImpl(logger, null, pluginsFolder, "26.2-forbric-bridge", minecraft);
+                // Register the server with the API's own static holder BEFORE any plugin loads. Every
+                // `Bukkit.getXxx()` delegates to this one field, and until it is set they all throw a
+                // NullPointerException naming the field rather than the missing registration — which reads as a
+                // bug in the plugin. Real plugins call it in the first lines of onEnable: Simple Voice Chat
+                // starts with `Bukkit.getBukkitVersion()`.
+                //
+                // CraftBukkit does this from its CraftServer constructor. There is no constructor of ours to
+                // hang it on, because ServerImpl is a plain class rather than a subclass the API knows about,
+                // so the registration is explicit here — before loadAll, and once.
+                // The plugin manager next, and before the server is published: both are needed by the first line
+		// of any plugin that registers a listener or disables itself, and a plugin that reaches a null
+		// manager crashes while REPORTING its own failure, which hides the real reason.
+		org.bukkit.Bukkit.setServer(serverImpl);
+		// Say out loud which Bukkit was registered, and from which loader. `Bukkit` keeps the server
+		// in a STATIC field, so the registration is visible only to code that resolved the SAME class
+		// object. A plugin whose loader defined its own copy still sees null, and the symptom — a
+		// NullPointerException naming the field — is identical to never having registered at all.
+		logger.info("registered the server with org.bukkit.Bukkit; class="
+				+ org.bukkit.Bukkit.class.getName()
+				+ " id=" + System.identityHashCode(org.bukkit.Bukkit.class)
+				+ " loader=" + org.bukkit.Bukkit.class.getClassLoader()
+				+ " getServer=" + org.bukkit.Bukkit.getServer());
+		BridgeBootstrap bridge = new BridgeBootstrap(pluginsFolder, logger, serverImpl, loader);
+		// After the bridge exists, because the manager is handed the live list it fills while loading.
+		// Before loadAll, because a plugin's first line may ask for the manager — and a plugin
+		// that fails in onEnable calls back into it to disable itself.
+		serverImpl.installPluginManager(bridge.loadedLive());
+		// The command-argument factory next, for the same reason: a plugin asks for an argument type while
+		// registering its commands, inside the COMMANDS handler, and a null factory there throws an
+		// IllegalStateException from a provider that cannot be given a server any other way.
+		ForbricArgumentTypes.install(serverImpl);
 
-		logger.info("Forbric Bukkit bridge starting; plugins folder: " + pluginsFolder);
+		logger.info("Forbrickit Bukkit bridge starting; plugins folder: " + pluginsFolder);
 		bridge.loadAll(dataFolder);
 		return bridge;
 	}
@@ -116,7 +155,7 @@ public final class BridgeBootstrap {
 			try {
 				PluginHandle handle = PluginHandle.load(jar, hostLoader, dataFolder, logger, server);
 				loaded.add(handle);
-				handle.enable();
+				server.enablePlugin(handle);
 				logger.info("enabled " + handle.description().getFullName() + " from " + jar.getFileName());
 			} catch (IOException | InvalidDescriptionException | ReflectiveOperationException
 					| RuntimeException failure) {
@@ -138,11 +177,28 @@ public final class BridgeBootstrap {
 			}
 		}
 		loaded.clear();
+                // Unregister last, and only after every plugin has had its onDisable: a plugin's shutdown code
+                // still calls Bukkit.getXxx(), and clearing the field first would turn a clean disable into the
+                // same NullPointerException this bridge exists to avoid. Never reset to null, either — a stale
+                // bridge is friendlier to a plugin that runs late than an absent one.
+                org.bukkit.Bukkit.setServer(server);
 	}
 
-	/** The plugins this bridge enabled, in order. */
+	/** The plugins this bridge enabled, in order, as a snapshot. */
 	public List<PluginHandle> loaded() {
 		return List.copyOf(loaded);
+	}
+
+	/**
+	 * The LIVE list of loaded plugins.
+	 *
+	 * <p>Handed to the plugin manager rather than a copy, and that is the point: the manager is
+	 * built before any plugin loads (so a plugin's first line can ask for it) but has to answer
+	 * {@code getPlugins()} afterwards. A copy would freeze the list at empty and every lookup would
+	 * come back missing a plugin the server is plainly running.
+	 */
+	List<PluginHandle> loadedLive() {
+		return loaded;
 	}
 
 	/** The bridge's own logger, for a caller that wants to report through the same channel. */

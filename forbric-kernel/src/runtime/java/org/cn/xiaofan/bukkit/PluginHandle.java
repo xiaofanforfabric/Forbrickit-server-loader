@@ -79,10 +79,54 @@ final class PluginHandle {
 		return new PluginHandle(jarPath, description, loader, plugin, jarPath.getFileName().toString());
 	}
 
-	/** Runs {@code onLoad}, then enables the plugin (which runs {@code onEnable}). */
-	void enable() {
+	/**
+	 * Runs {@code onLoad}, enables the plugin (which runs {@code onEnable}), then fires its lifecycle
+	 * handlers.
+	 *
+	 * <p>The order is the whole point. A modern Paper plugin registers its commands from a
+	 * {@code LifecycleEvents.COMMANDS} handler DURING {@code onEnable} -- registration outside that window
+	 * is refused by the manager, as on a real server. So the handlers can only be fired after
+	 * {@code setEnabled(true)} returns: a bridge that fired them first would find nothing registered, and
+	 * one that never fired them would leave the plugin's commands silently absent.
+	 *
+	 * <p>{@code commands} is the only event fired, because it is the only one with a point in this
+	 * bridge's lifecycle -- the server is already running when plugins load, so the startup events have
+	 * passed. The rest stay registered and unrun, which {@link ForbricLifecycleEventManager} says out loud.
+	 */
+	void enable(com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> dispatcher,
+			ServerImpl server) {
 		plugin.onLoad();
 		plugin.setEnabled(true);
+
+		ForbricLifecycleEventManager manager = ForbricApiBridge.lifecycleManagerOf(plugin);
+		if (manager != null) {
+			manager.fire("commands", new io.papermc.paper.plugin.lifecycle.event.registrar
+					.ReloadableRegistrarEvent<io.papermc.paper.command.brigadier.Commands>() {
+				@Override
+				public io.papermc.paper.command.brigadier.Commands registrar() {
+					return new ForbricCommands(dispatcher, plugin.getPluginMeta(), server);
+				}
+
+				/**
+				 * INITIAL, not RELOAD: these handlers run while the plugin is first enabling, which is what the
+				 * enum distinguishes. A plugin that branches on it -- some register more commands on a reload --
+				 * must see the same value it would on a real server startup.
+				 */
+				@Override
+				public io.papermc.paper.plugin.lifecycle.event.registrar.ReloadableRegistrarEvent.Cause cause() {
+					return io.papermc.paper.plugin.lifecycle.event.registrar.ReloadableRegistrarEvent.Cause.INITIAL;
+				}
+			});
+		}
+
+		// After the lifecycle handlers, not before: a plugin that declares a command in BOTH places registers
+		// its Brigadier tree above, and this must not shadow it. On a real server the plugin.yml declarations go
+		// into the command map first and a Brigadier registration merges into the same label, so a tree wins for
+		// the names it defines; adding the declaration only where nothing claimed the label reproduces that.
+		//
+		// This is also what makes getCommand(name) answer, which is the call a traditional plugin makes in its
+		// own onEnable -- before this, it answered null and the plugin threw NPE naming itself.
+		ForbricDeclaredCommands.install(dispatcher, description, plugin, server);
 	}
 
 	/** Disables the plugin, running {@code onDisable} when it was enabled. */

@@ -117,7 +117,10 @@ public final class KernelGameServerLifecycle {
 
 		// The class loader that defined this class is the game-side one, which owns the bridge jar and the API.
 		ClassLoader loader = KernelGameServerLifecycle.class.getClassLoader();
-		Object handle = net.forbric.kernel.boot.BukkitBridgeLauncher.start(loader, gameDir);
+		// The server goes with the call: a bridge that cannot see one answers no world and no
+		// player, and every event it raises would carry nothing. This method runs after the server is
+		// built, which is the earliest point the bridge can be useful.
+		Object handle = net.forbric.kernel.boot.BukkitBridgeLauncher.start(loader, gameDir, server);
 		if (handle != null) {
 			runningBridge = handle;
 			ForbricLog.info("[Forbric/Bukkit] plugin bridge is running");

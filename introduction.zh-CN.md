@@ -2,6 +2,10 @@
 
 [English](introduction.md) | 简体中文
 
+> **本分支（Forbrickit）的说明。** 本文描述的是 Forbric 内核（Forbrickit 的上游），内容按上游原样保留——这里讲的架构正是本分支继承的那套。Forbrickit 在此基础上加了第四个生态：一个随内核游戏侧分发的 Bukkit/Paper 插件桥接层。这部分见项目 [README](README.zh-CN.md) 与 [`forbric-kernel/README.zh-CN.md`](forbric-kernel/README.zh-CN.md)。
+>
+> **本分支只做服务端。** 下文凡是讲*客户端*的部分，都是上游 Forbric 的客户端：它**仍然留在树里**——本分支是对服务端做适配，没有去删掉自己没改的东西——但它在本分支中不在范围内、不再维护，**也绝不能用它构建客户端**。客户端请用 [Forbric 仓库](https://github.com/Ray-T-r/Minecraft-Forbric-mod-loader)。
+
 写给 mod 开发者和加载器开发者。本文求精确，不求浅显：按 Forbric 实际执行的顺序讲清它做了什么，并直接写出真实的类型名和文件名。本文描述的是 **`main` 分支**，而不是某个发布版；想了解发布版包含什么、玩家如何安装，请读 [README](README.zh-CN.md)。
 
 > **本文描述的是哪份代码。** 仓库里有两代实现。`forbric-kernel/`，即*自主内核*，`main` 分支交付的、`forbric-kernel-installer/` 安装的都是它，它也是本文的主题。`forbric-loader/` 是第一代（*焊接方案*：以真正的 fabric-loader/Knot 为宿主，同时驱动 FML 和 FancyModLoader）。它在安装好的实例里已不再运行，但内核构建和测试所依据的工具与暂存产物仍由它构建，见 [§14](#14-forbric-loader-还有什么用)。

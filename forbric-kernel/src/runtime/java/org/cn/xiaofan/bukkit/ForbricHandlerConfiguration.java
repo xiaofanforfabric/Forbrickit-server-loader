@@ -5,6 +5,7 @@ package org.cn.xiaofan.bukkit;
 
 import io.papermc.paper.plugin.lifecycle.event.LifecycleEventOwner;
 import io.papermc.paper.plugin.lifecycle.event.handler.LifecycleEventHandler;
+import io.papermc.paper.plugin.lifecycle.event.handler.configuration.MonitorLifecycleEventHandlerConfiguration;
 import io.papermc.paper.plugin.lifecycle.event.handler.configuration.PrioritizedLifecycleEventHandlerConfiguration;
 
 /**
@@ -22,14 +23,16 @@ import io.papermc.paper.plugin.lifecycle.event.handler.configuration.Prioritized
  * record component named {@code monitor} — javac refuses, because a record's accessor must return the component's
  * type and this one returns the configuration.
  */
-final class ForbricHandlerConfiguration implements PrioritizedLifecycleEventHandlerConfiguration<LifecycleEventOwner> {
+public final class ForbricHandlerConfiguration
+		implements PrioritizedLifecycleEventHandlerConfiguration<LifecycleEventOwner>,
+				MonitorLifecycleEventHandlerConfiguration<LifecycleEventOwner> {
 
 	private final String eventName;
 	private final LifecycleEventHandler<?> handler;
 	private final int priority;
 	private final boolean monitor;
 
-	ForbricHandlerConfiguration(String eventName, LifecycleEventHandler<?> handler) {
+	public ForbricHandlerConfiguration(String eventName, LifecycleEventHandler<?> handler) {
 		this(eventName, handler, 0, false);
 	}
 
@@ -41,11 +44,11 @@ final class ForbricHandlerConfiguration implements PrioritizedLifecycleEventHand
 		this.monitor = monitor;
 	}
 
-	String eventName() {
+	public String eventName() {
 		return eventName;
 	}
 
-	LifecycleEventHandler<?> handler() {
+	public LifecycleEventHandler<?> handler() {
 		return handler;
 	}
 
@@ -55,7 +58,7 @@ final class ForbricHandlerConfiguration implements PrioritizedLifecycleEventHand
 	}
 
 	@Override
-	public PrioritizedLifecycleEventHandlerConfiguration<LifecycleEventOwner> monitor() {
+	public ForbricHandlerConfiguration monitor() {
 		return new ForbricHandlerConfiguration(eventName, handler, priority, true);
 	}
 }

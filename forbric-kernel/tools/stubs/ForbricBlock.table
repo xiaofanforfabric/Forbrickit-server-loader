@@ -1,0 +1,33 @@
+# One block position in one world, as org.bukkit.Block.
+#
+# A Bukkit Block is a *live handle*: (world, x, y, z) plus a read-through to whatever is there right now. It owns no
+# state of its own, so two handles for the same corner are equal and hash alike, and neither one caches a BlockState
+# — that is the whole reason getType() reads the level every call.
+#
+# `@template` means the body is written in the template, next to the fields it reads — which is where the game's own
+# types have to appear, so those methods cannot be one-liners in a table. Everything else refuses with a named
+# exception.
+#
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.block.Block
+class: ForbricBlock
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricBlock.java
+template: ForbricBlock.java.in
+
+[methods]
+getWorld = @template
+getX = @template
+getY = @template
+getZ = @template
+getLocation = @template
+getBlockData = @template
+setBlockData(1) = @template
+getType = @template
+setType(1) = @template
+isEmpty = @template
+isLiquid = @template
+isPassable = @template
+getLightLevel = @template
+getState = @template

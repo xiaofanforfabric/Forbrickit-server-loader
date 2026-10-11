@@ -1,0 +1,35 @@
+# One online player, as org.bukkit.entity.Player.
+#
+# A Bukkit Player is a live handle on a connected client, like Block is a live handle on a corner: identity is the
+# account, not the wrapper, and nothing is cached. Two wrappers for one account are equal and hash alike.
+#
+# This table covers the methods the bridge can answer today. Everything else refuses with a named exception, which
+# is the point of the generator: a plugin that calls an unimplemented method gets a message naming it, not a
+# plausible wrong value.
+#
+# `@template` means the body is written in the template. A table body may read `arg0`/`arg1`, or name its
+# parameters by writing `name(first,second)` — the generator substitutes those names for its own.
+#
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.entity.Player
+class: ForbricPlayer
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricPlayer.java
+template: ForbricPlayer.java.in
+
+[methods]
+getName = @template
+getUniqueId = @template
+getPlayerListName = @template
+setPlayerListName(1) = @template
+getDisplayName = @template
+setDisplayName(1) = @template
+isOnline = @template
+isConnected = @template
+getWorld = @template
+getLocation = @template
+getServer = @template
+sendMessage(String) = @template
+sendActionBar(1) = @template
+kick(2) = @template

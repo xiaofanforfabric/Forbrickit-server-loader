@@ -1,0 +1,29 @@
+# One loaded world, as org.bukkit.World.
+#
+# Every method org.bukkit.World declares is generated. `@template` means the body is written in the template,
+# next to the fields it reads — which is where the game's own types have to appear, so those methods cannot be
+# one-liners in a table. Everything else refuses with a named exception.
+#
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.World
+class: ForbricWorld
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricWorld.java
+template: ForbricWorld.java.in
+
+[methods]
+getName = @template
+getUID = @template
+getMinHeight = @template
+getMaxHeight = @template
+getSeaLevel = @template
+getTime = @template
+setTime(1) = @template
+getFullTime = @template
+setFullTime(1) = @template
+isDayTime = @template
+getDifficulty = @template
+getSpawnLocation = @template
+getBlockAt(3) = @template
+getPlayers = @template

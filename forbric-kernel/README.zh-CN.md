@@ -1,8 +1,12 @@
-# Forbric 内核
+# Forbrickit 内核
 
 [English](README.md) | 简体中文
 
-一个**自主**的统一 Minecraft mod 加载器，在同一个 Minecraft 26.2 实例上运行 **Fabric + 传统 MinecraftForge + NeoForge** 的 mod。它从零重写了 `forbric-loader` 的“焊接方案”。
+一个**自主**的统一 Minecraft 服务端，在同一个 Minecraft 26.2 实例上运行 **Fabric + 传统 MinecraftForge + NeoForge** 的 mod，以及 **Bukkit/Paper** 插件。它从零重写了 `forbric-loader` 的“焊接方案”，是 Forbric 内核加入第四个生态后的分支。
+
+Bukkit 桥接层随本内核的游戏侧一起分发（见下面的 *架构*），所以针对 Paper API 编译的插件能在本服务端上找到那套 API，它的命令也是真实命令，不需要第二个进程，也不需要单独的服务端 jar。
+
+**本内核只做服务端。** Bukkit 和 Paper 是服务端 API：玩家不装插件，也不装 Paper。上游内核的客户端那一半**仍然留在树里**——本分支是对服务端做适配，所以没有删掉它——但它在本分支里不再维护，也没有针对本分支验证过，**请不要用它构建客户端**。客户端请用 Forbric 仓库。
 
 做源码开发的话，先看[开发指南](run/README.md)。在仓库根目录运行 `python3 tools/dev.py client`，会准备一个隔离的游戏环境，然后启动当前的内核。Gradle 还提供 `prepareDev`、`runClient`、`runServer`、`toolTest` 和 `integrationTest` 这几个任务。
 
@@ -42,7 +46,18 @@ API 会在首次启动时下载到 `<gameDir>/.forbric-kernel/bukkit-libs/`（`P
 - **`ServiceLoader` 描述符必须在这个 jar 里，不能放在引导侧 jar。** Paper 的 API 通过 `ServiceLoader.load(X.class, X.getClassLoader())` 解析实现，而 `X` 是游戏侧的类，所以只有 `ForbricClassLoader` 能看到它们。放在引导侧 jar 里的描述符永远不会被读取，每次 `JavaPlugin` 构造都会在静态初始化器里因为找不到 provider 而崩掉。
 - **游戏侧编译到 Java 25，引导侧编译到 21。** 这不是偏好：合并基座是 major 69，而 Paper 的 API 在元数据里声明了 `org.gradle.jvm.version=25`，所以 javac 拒绝为更低版本编译游戏侧。`runtimeJar` 会在桥接的类、描述符、或"API 未被打包"这几件事出错时直接让构建失败——否则每一种都只是在每个服务端上静默地"插件保持未加载"。
 
-`tools/gen_server_stub.py` 会从 API jar 重新生成 `ServerImpl`（它需要的 classpath 由 `gradlew printBukkitApiClasspath` 打印）。每当锁定的 paper-api 版本变动，`PaperApiFetcher` 和 `build.gradle` 两处都要同步重跑。
+桥接的四个类都是从 API jar 生成的，而不是手敲的：`tools/gen_stub.py` 加上 `tools/stubs/` 下成对的纯文本输入 ——
+一个 `.table` 写明这个桥接应答哪些方法、拒绝哪些，一个 `.java.in` 模板放着字段和手写的方法体。`javap` 需要的
+classpath 由 `gradlew printBukkitApiClasspath` 打印。
+
+```sh
+python3 tools/gen_stub.py --classpath "$(./gradlew -q printBukkitApiClasspath)" \
+        --table tools/stubs/ForbricWorld.table
+```
+
+每当锁定的 paper-api 版本变动，`PaperApiFetcher` 和 `build.gradle` 两处都要同步重跑。生成器会检查自己的输入，
+遇到问题就报错停下，而不是产出一个编译不过的文件：table 写了接口已删除的方法、模板缺 `{{methods}}` 标记、
+或者给一个没有无参重载的方法写了裸名字。
 
 ## 统一 API（`net.forbric.api`）
 

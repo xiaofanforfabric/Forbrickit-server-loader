@@ -69,7 +69,14 @@ public final class KernelGamePlayerEvents {
 		subscribe((IEventBus) neoBus, PlayerEvent.PlayerLoggedInEvent.class, "PlayerLoggedInEvent",
 				"MinecraftForge mods never learn a player joined, so join messages, login rewards and per-player "
 						+ "state restored on connect do not happen",
-				event -> ForgeEventFactory.firePlayerLoggedIn(event.getEntity()));
+				event -> {
+					ForgeEventFactory.firePlayerLoggedIn(event.getEntity());
+					// The configuration phase has no text channel, so a client admitted without a
+					// NeoForge negotiation is only warned here, once it can read the message. This is
+					// the delivery half of KernelVanillaClientBridge and must not be gated on the
+					// Forge forward succeeding: the warning is about the client, not about Forge.
+					KernelVanillaClientNotice.warnIfVanilla(event.getEntity());
+				});
 	}
 
 	/** NeoForge {@code PlayerLoggedOutEvent} → MinecraftForge {@code firePlayerLoggedOut}. */

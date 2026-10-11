@@ -118,11 +118,14 @@ public final class BukkitBridgeLauncher {
 	 *                 {@code <gameDir>/.forbric-kernel/}
 	 * @return an opaque handle to keep alive for the life of the server, or {@code null} if the bridge did not start
 	 */
-	public static Object start(ClassLoader loader, Path gameDir) {
+	public static Object start(ClassLoader loader, Path gameDir, Object server) {
 		try {
 			Class<?> runtime = Class.forName(ENTRY, true, loader);
-			Method start = runtime.getMethod("start", Path.class, Path.class, ClassLoader.class);
-			Object handle = start.invoke(null, gameDir.resolve("plugins"), gameDir, loader);
+			// Four arguments now: the bridge wraps the running server, and a bridge that cannot see one
+			// can answer no world and no player. Passed as Object because this is boot-side code and must
+			// not name a game type; the bridge narrows it and refuses by name if handed something else.
+			Method start = runtime.getMethod("start", Path.class, Path.class, ClassLoader.class, Object.class);
+			Object handle = start.invoke(null, gameDir.resolve("plugins"), gameDir, loader, server);
 			ForbricLog.info("[Forbric/Bukkit] plugin bridge started (plugins: %s)", gameDir.resolve("plugins"));
 			return handle;
 		} catch (ClassNotFoundException absent) {

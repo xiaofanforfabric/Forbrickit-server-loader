@@ -1,6 +1,9 @@
 # Forbric 加载器
 [English](README.md) | 简体中文
 
+> 这是**第一代**加载器，在 Forbrickit 分支里作为差分参考保留，仍由 CI 构建。当前的加载器是
+> [`forbric-kernel/`](../forbric-kernel/README.zh-CN.md)。
+
 一个**净室实现的统一 Minecraft mod 加载器**，能在同一个 Minecraft 26.2 实例里加载 **Fabric** mod（`fabric.mod.json`）和两种 **Forge 系** mod：传统 MinecraftForge（`META-INF/mods.toml`）与 NeoForge（`META-INF/neoforge.mods.toml`）。
 
 - 许可与来源：[CREDITS.md](CREDITS.md)、[MAPPINGS.md](MAPPINGS.md)、[NOTICE](NOTICE)
