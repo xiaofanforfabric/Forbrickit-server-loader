@@ -90,13 +90,70 @@ public final class KernelGameServerLifecycle {
 						net.forbric.kernel.util.ForbricLog.error("[Forbric/Compatibility] FATAL: a required feature failed during world loading; stopping the server normally");
 						server.halt(false);
 					}
+					// Bukkit/Paper plugins, once the world is up: a plugin's onEnable may touch a world, and the
+					// registries it reads are settled by now. Started from here rather than at boot because the
+					// bridge names game types through the API, and those are only safe to touch on this thread.
+					startBukkitBridgeIfInstalled(server);
 				});
 	}
+
+	/**
+	 * Brings up the Bukkit plugin bridge if one is installed, once and only once.
+	 *
+	 * <p>{@code ServerStartedEvent} fires per server, and a dedicated server has one; an integrated server fires
+	 * it again for each world opened in the same process, so the guard is not decoration — without it a second
+	 * world would load every plugin a second time and stack their listeners.
+	 */
+	private static void startBukkitBridgeIfInstalled(net.minecraft.server.MinecraftServer server) {
+		if (!BUKKIT_BRIDGE_STARTED.compareAndSet(false, true)) return;
+
+		// The directory the kernel recorded from --gameDir, not the process working directory: a launcher is
+		// free to start the JVM anywhere.
+		java.nio.file.Path gameDir = net.forbric.kernel.boot.BukkitBridgeLauncher.gameDirectory();
+		if (!net.forbric.kernel.boot.BukkitBridgeLauncher.enabled(gameDir)) {
+			ForbricLog.debug("[Forbric/Bukkit] no bridge installed under %s; skipping", gameDir);
+			return;
+		}
+
+		// The class loader that defined this class is the game-side one, which owns the bridge jar and the API.
+		ClassLoader loader = KernelGameServerLifecycle.class.getClassLoader();
+		Object handle = net.forbric.kernel.boot.BukkitBridgeLauncher.start(loader, gameDir);
+		if (handle != null) {
+			runningBridge = handle;
+			ForbricLog.info("[Forbric/Bukkit] plugin bridge is running");
+		}
+	}
+
+	/** Set once the bridge is up, so {@link #installStopping} can shut it down in order. */
+	private static volatile Object runningBridge;
+
+	private static final java.util.concurrent.atomic.AtomicBoolean BUKKIT_BRIDGE_STARTED =
+			new java.util.concurrent.atomic.AtomicBoolean();
 
 	/** NeoForge {@code ServerStoppingEvent} → MinecraftForge {@code handleServerStopping}. */
 	public static void installStopping(Object neoBus) {
 		subscribe((IEventBus) neoBus, ServerStoppingEvent.class, "handleServerStopping", false,
-				server -> ServerLifecycleHooks.handleServerStopping(server));
+				server -> {
+					// Bukkit plugins first: a plugin's onDisable may still want to reach the world, which is
+					// still up here and is not once handleServerStopping has run. The Forge-family mods that
+					// hook expects have already had ServerStarted; shutting the bridge down before them keeps
+					// "plugins see a live world" true without reordering anything Forge-family.
+					shutDownBukkitBridge();
+					ServerLifecycleHooks.handleServerStopping(server);
+				});
+	}
+
+	/** Disables every Bukkit plugin, once. Safe to call when no bridge ever started. */
+	private static void shutDownBukkitBridge() {
+		Object handle = runningBridge;
+		runningBridge = null;
+		if (handle == null) return;
+		try {
+			net.forbric.kernel.boot.BukkitBridgeLauncher.stop(handle);
+			ForbricLog.info("[Forbric/Bukkit] plugin bridge stopped");
+		} catch (Throwable failure) {
+			ForbricLog.warn("[Forbric/Bukkit] the plugin bridge did not stop cleanly: %s", String.valueOf(failure));
+		}
 	}
 
 	/**

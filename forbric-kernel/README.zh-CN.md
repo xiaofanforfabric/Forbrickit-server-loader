@@ -25,6 +25,25 @@
 
 注入的字节码仍会直接调用一些引导侧的静态成员。还有少数类仍由引导侧的工厂（`KernelModContainerFactory`、`KernelHudBridge`、`KernelGameLookup`）在运行时用 ASM 合成。这些是根本没法编译的情况，每一处都在所在位置写明了原因。
 
+### Bukkit 桥接随游戏侧一起分发
+
+`org.cn.xiaofan.bukkit.*`——让 Bukkit/Paper 插件能加载的那一层——和游戏侧其余部分一样，从同一个 `runtime` source set 编译进 `forbric-kernel-runtime.jar`。它不是单独的 jar，不是模组，也没有任何要部署的东西：能启动的内核就带着它的桥接。
+
+| 内容 | 是否打包 | 原因 |
+|---|---|---|
+| 桥接自己的类 | **是** | 是我们自己写的，不牵扯任何第三方许可 |
+| Paper API（`org.bukkit.*`、`io.papermc.paper.*`） | 否 | 第三方，部分是 copyleft；`compileOnly` |
+| 其签名涉及的 adventure 库 | 否 | 同上，而且 Minecraft 本身不带它们 |
+
+API 会在首次启动时下载到 `<gameDir>/.forbric-kernel/bukkit-libs/`（`PaperApiFetcher`），然后由 `BukkitBridgeLauncher.ownedJars` 在游戏侧之前加进加载器。这和 transfer 组件对 Fabric API、Team Reborn Energy 的规矩一致：只编译期依赖，绝不随包分发。`-Dforbric.bukkitBridge=off` 连下载都跳过——没网络的机器失去的是插件，不是服务端。
+
+有两处接线是必需的，不是顺手加的：
+
+- **`ServiceLoader` 描述符必须在这个 jar 里，不能放在引导侧 jar。** Paper 的 API 通过 `ServiceLoader.load(X.class, X.getClassLoader())` 解析实现，而 `X` 是游戏侧的类，所以只有 `ForbricClassLoader` 能看到它们。放在引导侧 jar 里的描述符永远不会被读取，每次 `JavaPlugin` 构造都会在静态初始化器里因为找不到 provider 而崩掉。
+- **游戏侧编译到 Java 25，引导侧编译到 21。** 这不是偏好：合并基座是 major 69，而 Paper 的 API 在元数据里声明了 `org.gradle.jvm.version=25`，所以 javac 拒绝为更低版本编译游戏侧。`runtimeJar` 会在桥接的类、描述符、或"API 未被打包"这几件事出错时直接让构建失败——否则每一种都只是在每个服务端上静默地"插件保持未加载"。
+
+`tools/gen_server_stub.py` 会从 API jar 重新生成 `ServerImpl`（它需要的 classpath 由 `gradlew printBukkitApiClasspath` 打印）。每当锁定的 paper-api 版本变动，`PaperApiFetcher` 和 `build.gradle` 两处都要同步重跑。
+
 ## 统一 API（`net.forbric.api`）
 
 正在按领域逐个扩充。它是内核和三个兼容层共同对齐的词汇与服务，免得各层两两互相迁就。它在 `DelegationPolicy` 里固定交给父加载器，理由和 `net.fabricmc.api.` 一样：每个 JVM 里恰好只有一份。

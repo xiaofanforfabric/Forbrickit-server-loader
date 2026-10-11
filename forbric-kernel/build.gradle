@@ -175,6 +175,13 @@ sourceSets {
 	// the build script to run, and `compileRuntimeJava` / `test` skip it so M0 (boot-side only) still builds.
 	runtime {
 		java { srcDir 'src/runtime/java' }
+		// NO resources srcDir here, deliberately. A source set's default resources directory is
+		// src/<name>/resources, so this set already reads src/runtime/resources -- which is where the kernel's
+		// client assets (forbric_logo.png, pack.mcmeta) have always lived. Declaring it again with srcDir adds
+		// the SAME directory a second time and every resource becomes a duplicate entry, which fails
+		// processRuntimeResources outright: "forbric_logo.png is a duplicate but no duplicate handling strategy
+		// has been set". The Bukkit bridge's META-INF/services descriptors are found through that default path,
+		// so they need no wiring either.
 		compileClasspath += sourceSets.main.output + files(stagedGameJars) + files(stagedMcLibraries) + transferModuleFiles + files(stagedRebornEnergy)
 		runtimeClasspath += sourceSets.main.output + files(stagedGameJars) + files(stagedMcLibraries) + transferModuleFiles + files(stagedRebornEnergy)
 	}
@@ -201,6 +208,12 @@ repositories {
 		url = 'https://maven.fabricmc.net/'
 	}
 	mavenCentral()
+	// Paper's API, compiled against by the Bukkit bridge below and never bundled. `net.md-5:bungeecord-chat`
+	// carries a `+build.N` qualifier that Central does not serve, so the repository is required, not optional.
+	maven {
+		name = 'PaperMC'
+		url = 'https://repo.papermc.io/repository/maven-public/'
+	}
 }
 
 configurations {
@@ -257,17 +270,48 @@ dependencies {
 	runtimeCompileOnly 'com.google.guava:guava:33.6.0-jre'
 
 	// JOML, GAME side only, on the same terms: fog data carries its colour as a Vector4f, and the MinecraftForge fog
-	// event KernelGameClientEvents posts takes it. Pinned to the version Minecraft 26.2 lists.
+	// event KernelGameClientEvents posts it. Pinned to the version Minecraft 26.2 lists.
 	runtimeCompileOnly('org.joml:joml:1.10.8') { transitive = false }
+
+	// Paper's API, for the Bukkit bridge (org.cn.xiaofan.bukkit.*) that lives in this source set. compileOnly in
+	// the strongest sense: the bridge's own classes ARE bundled -- they are ours -- but paper-api and every
+	// adventure artifact its signatures name are NOT. They are third-party, some under copyleft licences, and
+	// bundling them would change this distribution's licence surface for every user who never loads a plugin.
+	// PaperApiFetcher downloads them into <gameDir>/.forbric-kernel/bukkit-libs on first use instead, and
+	// BukkitBridgeLauncher adds them to the owned jars ahead of the bridge, which is the same rule the transfer
+	// component follows for Fabric API and Team Reborn Energy.
+	//
+	// The version is pinned to PaperApiFetcher.PAPER_API_VERSION, NOT resolved: the generated Server stub is
+	// written against one specific API version, so a floating `build.+` would move the compile-time contract out
+	// from under classes that already exist. Bump both together or neither.
+	runtimeCompileOnly 'io.papermc.paper:paper-api:26.2.build.133-stable'
 
 	testImplementation "org.junit.jupiter:junit-jupiter:${project.junit_version}"
 	// Compiled against too: FixturePolicyExtensionTest launches a nested run to prove the suite loads its extension.
 	testImplementation 'org.junit.platform:junit-platform-launcher'
 }
 
+// Bytecode floor, and the one place the two halves differ:
+//
+//   * BOOT side (main, modMenuApi, test) stays at 21. Its whole point is to load under any JDK a launcher might
+//     use; it names no game type, so nothing forces it higher.
+//   * GAME side (runtime, transferTest) must be 25, because everything it links against already is — the merged
+//     base is major 69 (measured, not assumed). javac cannot read a 25 class file's members while emitting 21
+//     bytecode without --release telling it the target is older than the input, and Paper's API refuses to resolve
+//     at all: it declares `org.gradle.jvm.version=25` in its metadata, so any consumer compiling for 21 is told
+//     "only compatible with JVM runtime version 25 or newer". Both are symptoms of the same mismatch.
+//
+// This was latent rather than new: the game side shipped as major 65 (Java 21) and ran only because a Java 25 JVM
+// happily loads older bytecode. The first game-side dependency that stated its own floor — paper-api — is what
+// made it visible.
 tasks.withType(JavaCompile).configureEach {
 	options.encoding = 'UTF-8'
 	options.release = 21
+}
+['runtime', 'transferTest'].each { name ->
+	tasks.named("compile${name.capitalize()}Java") {
+		options.release = 25
+	}
 }
 
 // The GAME-side set only compiles when the staged jars exist. Point developers at the pipeline otherwise.
@@ -517,6 +561,41 @@ tasks.register('runtimeJar', Jar) {
 		// Team Reborn Energy is the player's mod, compiled against and never shipped.
 		def bundled = entries.findAll { it.startsWith('team/reborn/') }
 		if (bundled) throw new GradleException("forbric-kernel-runtime.jar must not bundle Team Reborn Energy: ${bundled.take(3)}")
+		// The Bukkit bridge IS shipped -- it is ours -- and its absence is silent at build time but fatal at
+		// runtime: PaperApiFetcher and BukkitBridgeLauncher would find no entry class, log an ordinary "plugins
+		// stay unloaded", and every server would look like a server that simply had no plugins. Naming one class
+		// per seam is enough; the entry is what the reflection in BukkitBridgeLauncher resolves.
+		def bridge = ['BukkitRuntime', 'BridgeBootstrap', 'PluginHandle', 'PluginClassLoader', 'ServerImpl',
+				'ForbricApiBridge', 'ForbricPluginLoader']
+				.collect { "org/cn/xiaofan/bukkit/${it}.class".toString() }.findAll { !entries.contains(it) }
+		if (bridge) throw new GradleException("forbric-kernel-runtime.jar was built without its Bukkit bridge: ${bridge}")
+		// ...and its ServiceLoader descriptors, without which paper-api's `ServiceLoader.load(X.class, ...)`
+		// resolves no provider and every JavaPlugin construction dies inside a static initialiser. They must be
+		// in THIS jar: the interface they name is game-side, so only this loader can see them.
+		def descriptors = ['io.papermc.paper.InternalAPIBridge', 'org.bukkit.plugin.PluginLoader']
+				.collect { "META-INF/services/${it}".toString() }.findAll { !entries.contains(it) }
+		if (descriptors) throw new GradleException("forbric-kernel-runtime.jar was built without its Bukkit bridge provider files: ${descriptors}")
+		// Paper's API is compiled against and never shipped, exactly like Team Reborn Energy and Fabric API's
+		// transfer modules -- and for a stronger reason: some of it is copyleft.
+		def paperApi = entries.findAll { it.startsWith('org/bukkit/') || it.startsWith('io/papermc/paper/') }
+		if (paperApi) throw new GradleException("forbric-kernel-runtime.jar must not bundle the Paper API: ${paperApi.take(3)}")
+	}
+}
+
+// The classpath tools/gen_server_stub.py needs: every type the Paper `Server` interface mentions, so javap can
+// read it. Not the compile classpath -- that carries the whole game (Mojang/Forge/Neo jars, Minecraft's own
+// libraries), which javap neither needs nor benefits from, and whose paths would tie the generator to a prepared
+// machine. What it needs is paper-api and the adventure jars its signatures name, and those are exactly the
+// runtime compile classpath's library half minus the game.
+//
+// Same shape as printBootClasspath: one line on stdout, so a shell can pipe it straight into the generator.
+tasks.register('printBukkitApiClasspath') {
+	description = 'Prints the classpath tools/gen_server_stub.py uses to read the Paper Server interface.'
+	def paperApiClasspath = configurations.runtimeCompileClasspath
+	doLast {
+		println paperApiClasspath.files.findAll { it.name.endsWith('.jar') }
+				.findAll { !it.name.startsWith('patched-mc-merged') }
+				.collect { it.absolutePath }.join(File.pathSeparator)
 	}
 }
 

@@ -315,6 +315,14 @@ public final class KernelBoot {
 		// the lifecycle for the client pack repository as well as to the class loader.
 		List<Path> bundled = KernelBundledJars.extract(gameDir);
 		owned = KernelOwnedClasspath.compose(owned, minecraftLibraries, modJars, fabricJars, bundled);
+		// The Bukkit bridge, appended AFTER the compose so it never displaces a kernel-supplied library. The
+		// bridge's OWN classes are already in the game-side kernel jar (it is compiled from the runtime source
+		// set), so what is appended here is only the Paper API it implements -- downloaded once into the game
+		// directory rather than shipped (BukkitBridgeLauncher says why). -Dforbric.bukkitBridge=off skips even
+		// that download, and a machine with no network and no cache loses the plugins, not the server.
+		BukkitBridgeLauncher.setGameDirectory(gameDir);
+		// ownedJars already answers the off-switch with an empty list, so there is one condition here, not two.
+		owned.addAll(BukkitBridgeLauncher.ownedJars(gameDir));
 		KernelLifecycle.setKernelAssetJars(bundled);
 		if (!KernelOwnedClasspath.bundledFirst()) {
 			ForbricLog.warn("[Forbric/Boot] -D%s=off — guest jars precede kernel-supplied game libraries",

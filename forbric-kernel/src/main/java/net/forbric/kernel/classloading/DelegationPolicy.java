@@ -101,6 +101,19 @@ public final class DelegationPolicy {
 			// Mixin GENERATES these on demand (e.g. the @Args argument classes) and they must be defined by the
 			// loader that defines their targets — even though the rest of org.spongepowered.asm is parent-loaded.
 			"org.spongepowered.asm.synthetic.",
+			// The Bukkit bridge and the API it implements. Both sides are game-side, and for the same reason:
+			//
+			// Paper's API classes reach their server through java.util.ServiceLoader, which resolves providers
+			// through the INTERFACE's own class loader — `ServiceLoader.load(X.class, X.class.getClassLoader())`.
+			// The interface therefore has to be defined by the same loader that can see the implementation, and
+			// that loader is this one: the bridge's implementations call into net.minecraft.* (a ServerLevel, a
+			// ServerPlayer), which only the game-side loader can define. Pin the API to the parent and the loader
+			// would find no provider at all, and every JavaPlugin construction would die in a static initialiser.
+			"org.bukkit.",
+			"io.papermc.paper.",
+			"net.kyori.",
+			"net.md_5.bungee.",
+			"org.cn.xiaofan.bukkit.",
 	};
 
 	/**

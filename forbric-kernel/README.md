@@ -47,6 +47,38 @@ Injected bytecode still calls some boot-side statics directly, and a few classes
 runtime with ASM by boot-side factories (`KernelModContainerFactory`, `KernelHudBridge`, `KernelGameLookup`) —
 those are the cases that cannot be compiled at all, and each says why where it lives.
 
+### The Bukkit bridge rides in the game side
+
+`org.cn.xiaofan.bukkit.*` — the layer that lets Bukkit/Paper plugins load — is compiled into
+`forbric-kernel-runtime.jar` from the same `runtime` source set as the rest of the game side. It is not a
+separate jar, not a mod, and there is nothing to deploy: a kernel that boots at all has its bridge.
+
+| what | bundled? | why |
+|---|---|---|
+| the bridge's own classes | **yes** | ours; no third-party licence rides on them |
+| Paper's API (`org.bukkit.*`, `io.papermc.paper.*`) | no | third-party, some of it copyleft; `compileOnly` |
+| the adventure libraries its signatures name | no | same, and Minecraft does not ship them |
+
+The API is fetched once into `<gameDir>/.forbric-kernel/bukkit-libs/` (`PaperApiFetcher`) and added to the
+loader ahead of the game side (`BukkitBridgeLauncher.ownedJars`). That is the same rule the transfer component
+follows for Fabric API and Team Reborn Energy: compiled against, never shipped. `-Dforbric.bukkitBridge=off`
+skips even the download — a machine with no network loses the plugins, not the server.
+
+Two things about the wiring are load-bearing rather than incidental:
+
+- **The `ServiceLoader` descriptors must be in this jar, not the boot jar.** Paper's API resolves its
+  implementations through `ServiceLoader.load(X.class, X.getClassLoader())`, and `X` is game-side, so only
+  `ForbricClassLoader` can see them. A descriptor in the boot jar would never be read, and every `JavaPlugin`
+  construction would die inside a static initialiser with no provider found.
+- **The game side compiles at Java 25, the boot side at 21.** Not a preference: the merged base is major 69 and
+  Paper's API declares `org.gradle.jvm.version=25`, so javac refuses to compile the game side for anything
+  lower. `runtimeJar` fails the build if the bridge's classes, its descriptors, or the API's absence is wrong —
+  each of those is otherwise a silent "plugins stay unloaded" on every server.
+
+`tools/gen_server_stub.py` regenerates `ServerImpl` from the API jar (`gradlew printBukkitApiClasspath` prints
+the classpath it needs). Re-run it whenever the pinned paper-api version moves, in both `PaperApiFetcher` and
+`build.gradle`.
+
 ## The unified API (`net.forbric.api`)
 
 Being grown domain by domain: the vocabulary and services the kernel and all three compatibility layers align to,
