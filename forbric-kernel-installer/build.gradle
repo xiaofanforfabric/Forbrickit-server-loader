@@ -45,8 +45,17 @@ def mergeToolsJar = file("${loaderDir}/build/libs/forbric-merge-tools-0.1.0.jar"
 tasks.register('buildForbricJars', Exec) {
 	description = "Build the kernel jar the installer bundles."
 	workingDir kernelDir
-	commandLine(isWindows ? ['cmd', '/c', 'gradlew.bat', 'jar'] : ['./gradlew', 'jar'])
+	// The kernel's game side compiles against the staged game jars and Minecraft's own libraries, so a kernel
+	// build without those properties fails with ~100 "package com.mojang.serialization does not exist" errors.
+	// That used to go unnoticed because an older kernel jar sat in build/libs and Gradle left this task
+	// UP-TO-DATE; a clean tree exposes it immediately, and a standalone build is nothing but a clean tree.
+	// The properties are passed through from this project so one -P on the command line reaches both builds.
+	def passthrough = ['forbric.stagedRoot', 'forbric.mcLibraries', 'forbric.fabricApi', 'forbric.rebornEnergy']
+			.findAll { project.hasProperty(it) }
+			.collect { "-P${it}=${project.property(it)}" }
+	commandLine((isWindows ? ['cmd', '/c', 'gradlew.bat', 'jar'] : ['./gradlew', 'jar']) + passthrough)
 	inputs.dir("${kernelDir}/src/main")
+	inputs.dir("${kernelDir}/src/runtime")
 	inputs.file("${kernelDir}/build.gradle")
 	outputs.dir("${kernelDir}/build/libs")
 }
@@ -93,6 +102,118 @@ tasks.register('devToolsJar', Jar) {
 		from(mergeToolsJar) { rename '.*', 'forbric-merge-tools.jar' }
 	}
 	manifest { attributes 'Main-Class': 'net.forbric.installer.kernel.DevPrepare' }
+}
+
+// The standalone server: `java -jar forbric-server.jar` and nothing else to fetch by hand.
+//
+// It carries no game code, and cannot: the merged base and the two Forge-family runtimes embed Mojang's and the
+// loaders' work, so a downloadable jar may only BUILD them (ServerBootstrap asks InstallerFacade to, on first
+// launch, from the same public sources the installer uses). What this bundles is the two things a launch cannot
+// proceed without and should not have to find: the kernel, and the kernel's own boot dependencies.
+//
+// Nested as bytes under META-INF/forbric/, NOT on the compile classpath, for the reason ServerBootstrap's own
+// javadoc gives: the installer module must not depend on the kernel module. The kernel is what gets launched;
+// a launcher rebuilt whenever the kernel's API changes is not a launcher.
+def standaloneNested = layout.buildDirectory.dir('standalone-nested')
+
+// Collecting is its own task, not a doFirst of the Jar: a Jar's copy spec is fixed when the task is configured,
+// and a `from` added during execution is silently ignored — the jar comes out with no kernel in it and only a
+// first launch finds out. Doing the copy here means the Jar task can declare the directory as an input.
+tasks.register('stageStandalone', Sync) {
+	description = 'Copy the kernel and its boot dependencies into the standalone launcher’s nested layout.'
+	dependsOn 'buildForbricJars'
+	into standaloneNested
+	// The kernel jar, addressed the same way bundleForbric addresses it, so the two cannot drift.
+	from(new File(kernelDir, "build/libs/${kernelJar()}")) { rename '.*', 'forbric-kernel.jar' }
+	// The kernel's boot dependencies, asked of the kernel itself: the same printBootClasspath call bundleForbric
+	// makes, so the standalone jar's kernel equals the installed profile's.
+	into('kernel-deps') {
+		from({ kernelBootDependencies(isWindows, kernelDir) }) { duplicatesStrategy = DuplicatesStrategy.FAIL }
+	}
+	doLast {
+		def staged = fileTree(standaloneNested).matching { include 'kernel-deps/*.jar' }.files
+		if (staged.isEmpty()) throw new GradleException("the kernel reported no boot dependencies; printBootClasspath gave nothing usable")
+		println "stageStandalone → kernel + ${staged.size()} dependency jar(s)"
+	}
+}
+
+/**
+ * The kernel's boot dependencies, from the classpath the kernel prints for itself.
+ *
+ * <p>{@code windows} and {@code kernel} are parameters rather than reads of the script's {@code isWindows} and
+ * {@code kernelDir}: a {@code def} method called from a task's copy-spec closure resolves its free variables
+ * against the PROJECT (the closure's owner), not against the script, where neither name exists. Passing them
+ * makes the resolution explicit and the failure impossible.
+ */
+def kernelBootDependencies(boolean windows, File kernel) {
+	def command = windows ? ['cmd', '/c', 'gradlew.bat', '--offline', '-q', 'printBootClasspath']
+			: ['./gradlew', '--offline', '-q', 'printBootClasspath']
+	def process = new ProcessBuilder(command).directory(kernel).redirectErrorStream(true).start()
+	def output = process.inputStream.text
+	if (process.waitFor() != 0) throw new GradleException("could not ask the kernel for its classpath:\n" + output)
+	return output.readLines().findAll { it.contains(File.pathSeparator) }.last()
+			.split(File.pathSeparator)
+			.collect { new File(it) }
+			.findAll { it.isFile() && it.name.endsWith('.jar') && !it.name.startsWith('forbric-kernel') }
+}
+
+tasks.register('standaloneJar', Jar) {
+	group = 'distribution'
+	description = 'Build the one-file standalone server: java -jar forbric-server.jar.'
+	dependsOn 'compileJava', 'stageStandalone', 'buildMergeTools'
+	archiveBaseName = 'forbric-server'
+	archiveClassifier = ''
+	archiveVersion = ''
+	destinationDirectory = layout.buildDirectory.dir('libs')
+
+	// The launcher's own classes: net.forbric.kernel.standalone.ServerBootstrap and the InstallerFacade it calls.
+	from sourceSets.main.output.classesDirs
+	// The kernel and its dependencies, as bytes under META-INF/forbric/ (see ServerBootstrap.NESTED). The `into`
+	// is required, not cosmetic: a bare from(standaloneNested) drops its contents at the jar ROOT, where the
+	// kernel jar would sit beside META-INF and ServerBootstrap would not find it.
+	from(standaloneNested) { into 'META-INF/forbric' }
+	// The byte-merge tools, under the path ArtifactBuilder looks for (devToolsJar nests them identically). They
+	// are needed only on the FIRST launch — the merge that produces the merged base — but a standalone jar
+	// without them cannot do the one thing that makes it standalone: a machine that has never built Forbric.
+	from(mergeToolsJar) {
+		into 'forbric/tools'
+		rename '.*', 'forbric-merge-tools.jar'
+	}
+	// Forbric's own licence files, so the artifact says what it is without a separate download.
+	from(rootProject.file('LICENSE')) { into 'META-INF' }
+	from(rootProject.file('NOTICE')) { into 'META-INF' }
+
+	manifest {
+		attributes 'Main-Class': 'net.forbric.kernel.standalone.ServerBootstrap',
+				'Implementation-Title': 'Forbric standalone server',
+				'Implementation-Version': project.version
+	}
+
+	// A launcher that ships without its kernel starts, prints a stack trace about a missing resource, and gives
+	// no hint that the build was at fault. Check the artifact, the way runtimeJar checks the kernel's own.
+	doLast {
+		def entries = new java.util.zip.ZipFile(archiveFile.get().asFile).withCloseable { zip ->
+			Collections.list(zip.entries())*.name as Set
+		}
+		def required = ['net/forbric/kernel/standalone/ServerBootstrap.class',
+				'net/forbric/installer/kernel/InstallerFacade.class',
+				'META-INF/forbric/forbric-kernel.jar',
+				// Without this the jar launches, downloads, patches, and then dies at the merge with "this
+				// installer was built without /forbric/tools/forbric-merge-tools.jar" — after several minutes of
+				// a first run, which is the worst possible moment to learn the build was wrong.
+				'forbric/tools/forbric-merge-tools.jar']
+		def missing = required.findAll { !entries.contains(it) }
+		if (missing) throw new GradleException("forbric-server.jar was built without ${missing}")
+		def deps = entries.findAll { it.startsWith('META-INF/forbric/kernel-deps/') && it.endsWith('.jar') }
+		if (deps.isEmpty()) throw new GradleException("forbric-server.jar carries no kernel dependencies; the server cannot boot without them")
+		// The game must never be inside this jar. It is not ours to ship, and a copy here would be picked up by
+		// the child's system loader ahead of the merged base — the one thing ForbricClassLoader exists to prevent.
+		def game = entries.findAll { it.startsWith('net/minecraft/') || it.startsWith('net/minecraftforge/')
+				|| it.startsWith('net/neoforged/') }
+		if (game) throw new GradleException("forbric-server.jar must not carry game code: ${game.take(3)}")
+		println "standaloneJar → ${archiveFile.get().asFile.name} (${entries.size()} entries, " +
+				"${archiveFile.get().asFile.length() / 1024 / 1024} MB)"
+	}
 }
 
 def linkGateClasses = tasks.register('compileLinkGateTest', JavaCompile) {
