@@ -81,9 +81,13 @@ public final class BridgeBootstrap {
 	}
 
 	private void loadAll(Path dataFolder) throws IOException {
+		// Create it when absent, rather than warn and return. A server that says nothing and loads nothing is
+		// indistinguishable from a broken one: the user drops a jar next to the server, sees no new folder, sees
+		// no plugin load, and concludes the loader lied. Making the folder answers the question before it is
+		// asked — and the first launch of a fresh server is exactly when it gets asked.
 		if (!Files.isDirectory(pluginsFolder)) {
-			logger.warning("plugins folder does not exist: " + pluginsFolder);
-			return;
+			Files.createDirectories(pluginsFolder);
+			logger.info("created the plugins folder: " + pluginsFolder);
 		}
 
 		List<Path> jars;
@@ -96,7 +100,15 @@ public final class BridgeBootstrap {
 		}
 
 		if (jars.isEmpty()) {
-			logger.info("no plugin jars in " + pluginsFolder);
+			// Said plainly and with the path, because this is the message a user reads when their plugin is in
+			// the wrong place — the MODS folder, a subfolder, a .zip, or a sibling directory named "plugin".
+			long others;
+			try (Stream<Path> entries = Files.list(pluginsFolder)) {
+				others = entries.filter(path -> !path.getFileName().toString().endsWith(".jar")).count();
+			}
+			logger.info("no plugin jars found. Put Bukkit/Paper plugin .jar files directly in: " + pluginsFolder
+					+ (others > 0 ? " (" + others + " other entr" + (others == 1 ? "y is" : "ies are")
+							+ " there and were not .jar files)" : ""));
 			return;
 		}
 
