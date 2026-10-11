@@ -147,15 +147,39 @@ final class ServerImpl implements org.bukkit.Server {
 	 * <p>Not a Bukkit permission: the game decides what is privileged, and a bridge that consulted the API's
 	 * table instead would let a plugin's own default grant op powers. The name is needed because the op list
 	 * is keyed by name-and-id, and a player who changed their name is listed under both.
+	 *
+	 * <p><b>The online-player lookup must not be the only path.</b> This is asked while the command list is
+	 * being built for a joining player — {@code PlayerList.sendPlayerPermissionLevel} runs about 180 bytecode
+	 * instructions BEFORE {@code PlayerList.players.add(player)}, so at that moment the player is genuinely not
+	 * in the list yet and {@code getPlayer(uuid)} returns null. Answering "not an operator" there refused every
+	 * {@code default: op} command, and the refusal is not a message: {@code CommandHelper.mergeCommandNode}
+	 * DROPS a node whose {@code canUse} says no, so the client received a command tree with no plugin command
+	 * in it at all. The client then reports the fully-typed line as "unknown or incomplete command at position
+	 * 1" while the server would have run it happily once the player was listed — which is exactly the split
+	 * symptom this fix removes.
+	 *
+	 * <p>So the op list is searched by account id when the player is not online yet. The id is the stable half
+	 * of the key; a name is only needed for an entry written before the id was recorded, and entries the game
+	 * itself writes always carry both.
 	 */
 	boolean isOperator(java.util.UUID player) {
 		if (minecraft == null) return false;
-		// The op list is keyed by name AND id, and the name is what an existing entry was written with, so
-		// the lookup has to take the name from the player rather than pass a placeholder.
+		// The normal path: an online player, whose name the op list wants beside the id.
 		net.minecraft.server.level.ServerPlayer online = minecraft.getPlayerList().getPlayer(player);
-		if (online == null) return false;
-		return minecraft.getPlayerList().isOp(
-				new net.minecraft.server.players.NameAndId(player, online.getScoreboardName()));
+		if (online != null) {
+			return minecraft.getPlayerList().isOp(
+					new net.minecraft.server.players.NameAndId(player, online.getScoreboardName()));
+		}
+		// The joining-player path, where the list does not hold them yet. Match the id half of every entry,
+		// which is the same question the name-based lookup answers for a listed player.
+		for (net.minecraft.server.players.ServerOpListEntry entry
+				: minecraft.getPlayerList().getOps().getEntries()) {
+			net.minecraft.server.players.NameAndId key = entry.getUser();
+			if (key != null && player.equals(key.id())) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

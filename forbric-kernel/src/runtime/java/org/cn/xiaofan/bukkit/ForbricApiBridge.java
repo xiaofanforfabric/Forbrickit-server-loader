@@ -182,7 +182,7 @@ public final class ForbricApiBridge implements InternalAPIBridge {
 
 	@Override
 	public ItemStack deserializeItem(byte[] data) {
-		throw notYet("item (de)serialisation");
+		return ForbricItemCodec.decode(data);
 	}
 
 	@Override
@@ -200,9 +200,15 @@ public final class ForbricApiBridge implements InternalAPIBridge {
 		throw notYet("statistic criteria");
 	}
 
+	/**
+	 * An empty stack, which {@code ItemStack.empty()} and the no-argument constructor both reach.
+	 *
+	 * <p>Air with a count of zero, built by this bridge's own class so every later call on it lands
+	 * somewhere real — the API's own class would forward to a delegate that is not there.
+	 */
 	@Override
 	public ItemStack createEmptyStack() {
-		throw notYet("empty item stacks");
+		return ForbricItemStack.plain(org.bukkit.Material.AIR, 0);
 	}
 
 	@Override
