@@ -357,7 +357,16 @@ final class ForbricCommands implements Commands {
                         .append(node.getClass().getSimpleName())
                         .append(" name=").append(node.getName())
                         .append(" executable=").append(node.getCommand() != null)
-                        .append(" redirect=").append(node.getRedirect() == null ? "none" : node.getRedirect().getName());
+                        .append(" redirect=").append(node.getRedirect() == null ? "none" : node.getRedirect().getName())
+                        // The requirement's identity, because "is the node visible to a client" is decided by
+                        // exactly one thing: whether the game can walk past this predicate while building the
+                        // packet. A node whose predicate is Brigadier's own always-true default is visible to
+                        // everyone; one carrying a plugin's predicate is visible only where that predicate says
+                        // so. Printing the class name is what separates "no predicate at all" from "a predicate
+                        // that answered no" — two failures that look identical from the client.
+                        .append(" requirement=").append(node.getRequirement() == null
+                                        ? "null"
+                                        : node.getRequirement().getClass().getName());
         if (node instanceof ArgumentCommandNode<?, ?> argument) {
             row.append(" type=").append(argument.getType().getClass().getName())
                             .append(" suggestions=").append(argument.getCustomSuggestions() == null ? "none" : "set");
@@ -589,5 +598,14 @@ final class ForbricCommands implements Commands {
                 throw thrown;
             }
         };
+    }
+
+    /** A source's name and position for the visibility log, without asking it anything that could throw. */
+    private static String describe(net.minecraft.commands.CommandSourceStack source) {
+        try {
+            return source.getTextName();
+        } catch (RuntimeException ignored) {
+            return "<unnamed source>";
+        }
     }
 }

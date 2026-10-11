@@ -2,7 +2,14 @@
  * Forbric Bukkit bridge — an {@code org.bukkit.entity.Player} backed by a Minecraft {@code ServerPlayer}.
  * *** GENERATED FILE — DO NOT EDIT ***
  *
- * Produced by tools/gen_stub.py from tools/stubs/ForbricPlayer.table. Edits belong in the table or this template.
+ * Produced by tools/gen_stub.py from tools/stubs/ForbricPlayer.table. Editing this file by hand means the next
+ * generation silently discards the edit; the change belongs in the table or the template.
+ *
+ * <p><b>This warning is not theoretical.</b> The permission methods and the {@code sendMessage}/{@code sendActionBar}
+ * bodies used to live only in the generated file, so regenerating it for an unrelated reason reverted all of them to
+ * {@code throw notYet(...)} — and the symptom was a player who could not join the server at all, because a command's
+ * permission check is evaluated while the command tree is sent. Anyone adding an implementation here must add the
+ * {@code .table} entry AND the body below, together.
  */
 package {{package}};
 
@@ -27,6 +34,17 @@ final class {{class}} implements {{interface}} {
 
         private final net.minecraft.server.level.ServerPlayer player;
         private final ServerImpl server;
+
+        /**
+         * Whatever this player has been granted at run time, in the order it was added.
+         *
+         * <p>Per wrapper, because a wrapper is built per call — see {@link #of}. A plugin that adds an
+         * attachment holds the wrapper it added it to and reads it back through the same one, which is the only
+         * usage the API describes; one that stores the attachment and re-reads through a NEW wrapper gets the
+         * attachment's own {@code getPermissions()} back, which is the documented way to do that.
+         */
+        private final java.util.List<org.bukkit.permissions.PermissionAttachment> attachments =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
         private {{class}}(net.minecraft.server.level.ServerPlayer player, ServerImpl server) {
                 this.player = player;
@@ -146,35 +164,54 @@ final class {{class}} implements {{interface}} {
         }
 
         /**
-         * Sends a plain-text message to this player. Refuses until the two component systems are bridged.
+         * This player's inventory, as a live view of the game's own.
          *
-         * <p>Bukkit and Paper hand a plugin a <b>Kyori Adventure</b> {@code Component}; the game sends a
-         * {@code net.minecraft.network.chat.Component}. They model the same JSON but are different object graphs,
-         * and there is no identity conversion — one has to be serialised and the other parsed.
+         * <p>A fresh wrapper per call, like every other handle the bridge hands out: it holds the
+         * player and reads through on every access, so two wrappers are interchangeable and nothing
+         * has to be invalidated when the player leaves. The contents are never copied — a plugin that
+         * sets slot 5 has written into the game, which is what the API promises.
+         */
+        @Override
+        public org.bukkit.inventory.PlayerInventory getInventory() {
+                return new ForbricPlayerInventory(player, server);
+        }
+
+        /**
+         * Sends a plain-text message to this player.
          *
-         * <p>Refusing rather than sending plain text: a plugin's {@code sendMessage(Component.text("hi", RED))}
-         * that arrives uncoloured looks like it worked, and the plugin author has no way to tell the bridge
-         * dropped the styling. A message that names the missing piece is easier to act on than a wrong colour.
+         * <p><b>Plain text, not a component.</b> Bukkit and Paper hand a plugin a Kyori Adventure
+         * {@code Component}; the game sends a {@code net.minecraft.network.chat.Component}. They model
+         * the same JSON but are different object graphs, and there is no identity conversion — one has
+         * to be serialised and the other parsed, which this bridge does not do yet.
          *
-         * <p>The {@code String} overload is the one this bridge answers, because the Adventure one is a
-         * {@code default} on the interface and overriding it would be re-answering a method Paper already
-         * implemented in terms of this one.
+         * <p>Styling is not carried: the two component systems model the same JSON as different object
+         * graphs, and a message sent as literal text loses its colour. That is a visible loss in the
+         * chat, unlike the refusal it replaces, which took the whole reply with it.
          */
         @Override
         public void sendMessage(String message) {
-                throw notYet("sendMessage");
+                if (message == null) {
+                        return;
+                }
+                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(message));
         }
 
         /**
          * Sends a plain action-bar message.
          *
-         * <p>The {@code String} overload is the one this bridge answers; the BaseComponent and Adventure
-         * overloads are refused, for the same reason {@link #sendMessage} is — styling that silently disappears
-         * reads as success.
+         * <p>The {@code String} overload is the one this bridge answers; the BaseComponent and
+         * Adventure overloads are refused, for the same reason {@link #sendMessage} is — styling
+         * that silently disappears reads as success.
          */
         @Override
         public void sendActionBar(String message) {
-                throw notYet("sendActionBar");
+                // The game's action bar is the overlay form of a system message — the same component,
+                // sent with the overlay flag set. Refusing here was costing a plugin its action bar
+                // entirely; literal text is what a String message can carry, so that is what goes.
+                if (message == null) {
+                        return;
+                }
+                player.sendSystemMessage(net.minecraft.network.chat.Component.literal(message), true);
         }
 
         /**
@@ -216,6 +253,144 @@ final class {{class}} implements {{interface}} {
         @Override
         public String toString() {
                 return "ForbricPlayer[" + getName() + "]";
+        }
+
+        /**
+         * Several plain-text messages, one after another.
+         *
+         * <p>Delegates to {@link #sendMessage(String)} per line, which is what the API means: the
+         * array is a batch, not a different kind of message. A null array or a null element is
+         * skipped rather than fatal, because Paper's own implementation tolerates both and a plugin
+         * that passes one should not lose the rest of the batch.
+         */
+        @Override
+        public void sendMessage(String... messages) {
+                if (messages == null) {
+                        return;
+                }
+                for (String message : messages) {
+                        sendMessage(message);
+                }
+        }
+
+        /** A message attributed to another sender; the attribution is dropped, as the String form has none. */
+        @Override
+        public void sendMessage(java.util.UUID sender, String message) {
+                sendMessage(message);
+        }
+
+        /** A batch attributed to another sender; see {@link #sendMessage(java.util.UUID, String)}. */
+        @Override
+        public void sendMessage(java.util.UUID sender, String... messages) {
+                sendMessage(messages);
+        }
+
+        /**
+         * Whether this player holds a permission.
+         *
+         * <p>Three answers, in the order the API defines.
+         *
+         * <ol>
+         *   <li>an attachment granted at run time;
+         *   <li>the permission's own {@code default}, when it is registered;
+         *   <li>{@code false}.
+         * </ol>
+         *
+         * <p>A default of {@code OP} or {@code TRUE} therefore grants it to everyone or to operators, which is what
+         * {@code permission: kits.kit} with {@code default: op} in a {@code plugin.yml} means. Reading only whether
+         * the permission exists — which is what the console sender beside this class does — would let every player
+         * through every gate.
+         */
+        @Override
+        public boolean hasPermission(String name) {
+                if (name == null) {
+                        return false;
+                }
+                for (org.bukkit.permissions.PermissionAttachment attachment : attachments) {
+                        java.util.Map<String, Boolean> values = attachment.getPermissions();
+                        if (values.containsKey(name)) {
+                                return Boolean.TRUE.equals(values.get(name));
+                        }
+                }
+                org.bukkit.permissions.Permission permission = server.getPluginManager() == null
+                                ? null : server.getPluginManager().getPermission(name);
+                if (permission == null) {
+                        return false;
+                }
+                return switch (permission.getDefault()) {
+                        case TRUE -> true;
+                        case OP -> isOp();
+                        case FALSE, NOT_OP -> false;
+                };
+        }
+
+        /** The same question, asked with the permission object. */
+        @Override
+        public boolean hasPermission(org.bukkit.permissions.Permission permission) {
+                return permission != null && hasPermission(permission.getName());
+        }
+
+        /**
+         * Grants a permission to this player for as long as the attachment lives.
+         *
+         * <p>Kept on the player and consulted by {@link #hasPermission(String)} before the permission's own default,
+         * which is the order Bukkit defines: a plugin that grants {@code kits.kit} to one player must not be overruled
+         * by the default that denies it to everyone else.
+         *
+         * <p>The ticking overloads are refused rather than accepted and ignored. A timed attachment is removed by
+         * the server's scheduler, and this bridge does not host one; accepting the call would leave a permission in
+         * place forever, which reads as a security hole and not as a missing feature.
+         */
+        @Override
+        public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin,
+                        String name, boolean value) {
+                org.bukkit.permissions.PermissionAttachment attachment =
+                                new org.bukkit.permissions.PermissionAttachment(plugin, this);
+                attachment.setPermission(name, value);
+                attachments.add(attachment);
+                return attachment;
+        }
+
+        /** An empty attachment, which the plugin then fills. */
+        @Override
+        public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin) {
+                org.bukkit.permissions.PermissionAttachment attachment =
+                                new org.bukkit.permissions.PermissionAttachment(plugin, this);
+                attachments.add(attachment);
+                return attachment;
+        }
+
+        /** Refuses the timed form; see {@link #addAttachment(org.bukkit.plugin.Plugin, String, boolean)}. */
+        @Override
+        public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin,
+                        String name, boolean value, int ticks) {
+                throw new UnsupportedOperationException("[Forbric/Bukkit] Player.addAttachment(..., ticks) is not "
+                                + "implemented by this bridge yet: the timed removal needs a scheduler this bridge "
+                                + "does not host. Use addAttachment(plugin, name, value) and remove it yourself");
+        }
+
+        /** Refuses the timed form; see {@link #addAttachment(org.bukkit.plugin.Plugin, String, boolean)}. */
+        @Override
+        public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, int ticks) {
+                throw new UnsupportedOperationException("[Forbric/Bukkit] Player.addAttachment(..., ticks) is not "
+                                + "implemented by this bridge yet: the timed removal needs a scheduler this bridge "
+                                + "does not host. Use addAttachment(plugin) and remove it yourself");
+        }
+
+        /**
+         * Whether this player is a server operator.
+         *
+         * <p>Read from the game's own ops list rather than from a copy kept here: an operator can be added or removed
+         * while the server runs ({@code /op}, {@code /deop}, or an edit to {@code ops.json} the game reloads), and a
+         * bridge that cached the answer at join would keep granting a permission the server had already taken away.
+         *
+         * <p>This is what a {@code permission: x} with {@code default: op} in a {@code plugin.yml} resolves to — see
+         * {@link #hasPermission(String)} — so it is the answer to "may this player run /kit", not a separate notion
+         * of privilege.
+         */
+        @Override
+        public boolean isOp() {
+                return server.isOperator(getUniqueId());
         }
 
 {{methods}}}

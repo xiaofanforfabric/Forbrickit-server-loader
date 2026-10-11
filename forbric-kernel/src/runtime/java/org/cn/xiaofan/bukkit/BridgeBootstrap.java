@@ -84,6 +84,22 @@ public final class BridgeBootstrap {
 		// of any plugin that registers a listener or disables itself, and a plugin that reaches a null
 		// manager crashes while REPORTING its own failure, which hides the real reason.
 		org.bukkit.Bukkit.setServer(serverImpl);
+		// The game's registries, for Paper's RegistryAccess service. That is a SEPARATE
+		// ServiceLoader lookup from the one above, and it has no server to read them from:
+		// Paper's provider lives in the server jar and reads its own game state, while this one is
+		// instantiated by the loader with no arguments. So the registries are handed over here,
+		// where both the game and the API are linked.
+		//
+		// Without it, `Material.asItemType()` finds no ItemType, `ItemStack.of(...)` throws, and
+		// every plugin that builds an item fails — at a point that looks like a broken API rather
+		// than a missing service.
+		if (minecraft != null) {
+			ForbricRegistries.install(minecraft.registryAccess());
+			logger.info("installed the game's registries for the Bukkit item registry ("
+					+ minecraft.registryAccess()
+							.lookupOrThrow(net.minecraft.core.registries.Registries.ITEM).size()
+					+ " items)");
+		}
 		// Say out loud which Bukkit was registered, and from which loader. `Bukkit` keeps the server
 		// in a STATIC field, so the registration is visible only to code that resolved the SAME class
 		// object. A plugin whose loader defined its own copy still sees null, and the symptom — a
