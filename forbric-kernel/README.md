@@ -1,9 +1,19 @@
-# Forbric Kernel
+# Forbrickit Kernel
 
 English | [简体中文](README.zh-CN.md)
 
-A **sovereign** unified Minecraft mod loader that runs **Fabric + traditional MinecraftForge + NeoForge**
-mods on one Minecraft 26.2 instance — a ground-up rewrite of the `forbric-loader` "weld".
+A **sovereign** unified Minecraft server that runs **Fabric + traditional MinecraftForge + NeoForge**
+mods, and **Bukkit/Paper** plugins, on one Minecraft 26.2 instance — a ground-up rewrite of the
+`forbric-loader` "weld", and a fork of the Forbric kernel that adds the fourth ecosystem.
+
+The Bukkit bridge rides on the game side of this kernel (see *Architecture* below), so a plugin
+compiled against the Paper API finds that API on this server, and its commands are real commands,
+without a second process and without a separate server jar.
+
+**This kernel is server-side.** Bukkit and Paper are server APIs: players install no plugin and no
+Paper. The upstream client half of this kernel is still in the tree — it was not removed, because
+this fork adapts the server — but it is unmaintained here and untested against this fork, so do not
+build a client from it. Use the Forbric repository for the client.
 
 For source development, start with [the development guide](run/README.md). From the repository root,
 `python3 tools/dev.py client` prepares an isolated game environment and launches the current kernel.
@@ -75,9 +85,20 @@ Two things about the wiring are load-bearing rather than incidental:
   lower. `runtimeJar` fails the build if the bridge's classes, its descriptors, or the API's absence is wrong —
   each of those is otherwise a silent "plugins stay unloaded" on every server.
 
-`tools/gen_server_stub.py` regenerates `ServerImpl` from the API jar (`gradlew printBukkitApiClasspath` prints
-the classpath it needs). Re-run it whenever the pinned paper-api version moves, in both `PaperApiFetcher` and
-`build.gradle`.
+The four bridge classes are generated rather than typed out, from the API jar, by `tools/gen_stub.py` plus a
+pair of plain-text inputs under `tools/stubs/`: a `.table` naming which methods this bridge answers and which it
+refuses, and a `.java.in` template holding the fields and the hand-written bodies. `gradlew
+printBukkitApiClasspath` prints the classpath `javap` needs.
+
+```sh
+python3 tools/gen_stub.py --classpath "$(./gradlew -q printBukkitApiClasspath)" \
+        --table tools/stubs/ForbricWorld.table
+```
+
+Regenerate whenever the pinned paper-api version moves, in both `PaperApiFetcher` and `build.gradle`. The
+generator checks its own inputs and stops with a message rather than emitting something that will not compile: a
+table naming a method the interface dropped, a template with no `{{methods}}` marker, or a bare name for an
+overloaded method that has no no-argument form.
 
 ## The unified API (`net.forbric.api`)
 

@@ -1,24 +1,22 @@
 /*
- * Forbric Bukkit bridge — the {@code Server} the plugins see.  *** GENERATED FILE — DO NOT EDIT ***
+ * Forbric Bukkit bridge — the {@code Server} a plugin receives.  *** GENERATED FILE — DO NOT EDIT ***
  *
- * Produced by tools/gen_server_stub.py against paper-api-26.2.build.133-stable.jar. Re-run that script after bumping the api; editing
- * this file by hand means the next run silently discards the edit.
+ * Produced by tools/gen_stub.py from tools/stubs/ServerImpl.table. Editing this file by hand means the next
+ * generation silently discards the edit; the change belongs in the table or the template.
  */
 package org.cn.xiaofan.bukkit;
 
-
-
 /**
- * The {@code Server} a plugin receives from {@code getServer()}.
+ * The {@code org.bukkit.Server} a plugin receives from {@code getServer()}.
  *
- * <p>{@code org.bukkit.Server} has ~200 abstract methods. This bridge implements the few a plugin needs to
- * start — its identity, its logger, and the plugin manager — and refuses the rest with a named
- * {@link UnsupportedOperationException}. Refusing loudly is deliberate: a stubbed {@code getWorld()}
- * returning {@code null} would turn "this bridge has no worlds yet" into a {@code NullPointerException}
- * inside the plugin, several frames away from the cause.
+ * <p>Paper's {@code Server} declares ~200 abstract methods. This bridge answers the ones a plugin needs to
+ * start — its identity, its logger, the plugin manager, and the worlds and players it will actually look for —
+ * and refuses the rest with a named {@link UnsupportedOperationException}. Refusing loudly is deliberate: a
+ * stubbed {@code getWorld()} returning {@code null} turns "this bridge has no worlds" into a
+ * {@code NullPointerException} inside the plugin, several frames away from the cause.
  *
- * <p>Every method below carries the interface's own signature, so a plugin links against this class exactly
- * as it would against Paper's.
+ * <p>Every method carries the interface's own signature, generated from the API jar, so a plugin links against
+ * this class exactly as it would against Paper's.
  */
 final class ServerImpl implements org.bukkit.Server {
 
@@ -27,21 +25,160 @@ final class ServerImpl implements org.bukkit.Server {
 	static final String MINECRAFT_VERSION = "26.2";
 
 	private final java.util.logging.Logger logger;
-	private final org.bukkit.plugin.PluginManager pluginManager;
+	/**
+	 * The plugin manager, or null until {@link #installPluginManager()} has run.
+	 *
+	 * <p>Not final, because it CANNOT be built before this instance exists: Paper's own
+	 * {@code SimplePluginManager} takes a {@code Server} in its constructor, and every command it
+	 * registers is registered against a {@code SimpleCommandMap} that also takes one. The way out is to
+	 * construct this object with null and fill the field in immediately afterwards, which is what
+	 * {@link BridgeBootstrap} does before any plugin loads. A plugin never sees the null state; the
+	 * only caller that could was the constructor.
+	 */
+	private org.bukkit.plugin.PluginManager pluginManager;
+	private org.bukkit.command.SimpleCommandMap commandMap;
 	private final java.nio.file.Path pluginsFolder;
 	private final String version;
 
+	/**
+	 * The running server, or null when the kernel had none to hand over.
+	 *
+	 * <p>Typed as the game's own class rather than as this bridge's wrapper of it: every {@code World} a plugin
+	 * asks for is one of this server's {@code ServerLevel}s, and the conversion belongs at the point of use.
+	 */
+	private final net.minecraft.server.MinecraftServer minecraft;
+
 	ServerImpl(java.util.logging.Logger logger, org.bukkit.plugin.PluginManager pluginManager,
-			java.nio.file.Path pluginsFolder, String version) {
+			java.nio.file.Path pluginsFolder, String version, net.minecraft.server.MinecraftServer minecraft) {
 		this.logger = logger;
 		this.pluginManager = pluginManager;
 		this.pluginsFolder = pluginsFolder;
 		this.version = version;
+		this.minecraft = minecraft;
+	}
+
+	/**
+	 * Builds the plugin manager and the command map behind it, now that {@code this} exists to hand to them.
+	 *
+	 * <p>Both are Bukkit's own classes — {@code SimplePluginManager} and {@code SimpleCommandMap} live in
+	 * paper-api and are the implementations the real server uses. Writing our own would mean re-deriving
+	 * event-priority ordering, permission default recalculation, and the plugin-file-to-loader table, each of
+	 * which has behaviour a plugin can observe. There is nothing Forbric-specific about any of them, so the
+	 * honest thing is to use the ones Paper ships.
+	 *
+	 * <p>The command map is created here rather than passed in because a plugin registering a command through
+	 * the lifecycle events needs it to reach the same map the dispatcher reads. One instance, kept.
+	 */
+	void installPluginManager(java.util.List<PluginHandle> handles) {
+		this.commandMap = new org.bukkit.command.SimpleCommandMap(this, new java.util.HashMap<>());
+		// Bukkit's manager for the events and permissions, wrapped so the six methods that read its
+		// plugin list are answered from the handles the bridge actually loaded.
+		this.pluginManager = new ForbricPluginManager(
+				new org.bukkit.plugin.SimplePluginManager(this, this.commandMap), handles, this);
+	}
+
+	/**
+	 * The command map the plugin manager dispatches through, or null before {@link #installPluginManager()}.
+	 *
+	 * <p>Kept rather than reached for through the manager: a plugin registering a command must land in the
+	 * SAME map the console dispatcher reads, and that is this instance.
+	 */
+	org.bukkit.command.SimpleCommandMap commandMap() {
+		return commandMap;
 	}
 
 	private static UnsupportedOperationException notYet(String what) {
 		return new UnsupportedOperationException(
-				"[Forbric/Bukkit] Server." + what + "() is not implemented by this bridge yet");
+				"[Forbric/Bukkit] org.bukkit.Server." + what + "() is not implemented by this bridge yet");
+	}
+
+	/**
+	 * Every loaded world, wrapped.
+	 *
+	 * <p>{@link ForbricWorld#of} is the one place a {@code ServerLevel} becomes an {@code org.bukkit.World}.
+	 * Wrapping per call rather than caching, so a world reloaded under the same name is not answered from a
+	 * stale wrapper.
+	 */
+	private java.util.List<org.bukkit.World> worlds() {
+		if (minecraft == null) return java.util.List.of();
+		java.util.List<org.bukkit.World> wrapped = new java.util.ArrayList<>();
+		for (net.minecraft.server.level.ServerLevel level : minecraft.getAllLevels()) {
+			wrapped.add(ForbricWorld.of(level, this));
+		}
+		return wrapped;
+        }
+
+	/**
+         * One world by name, unique id, or key.
+         *
+         * <p>Bukkit names a world by its folder name and by a UUID; Minecraft identifies one by a
+         * {@code ResourceKey}, whose identifier is the world's dimension id ({@code minecraft:overworld}, or a
+         * pack's own). All three reach the same lookup because each is a different spelling of "which world do
+         * you mean", and a plugin holding a saved reference may have any of them.
+         *
+         * <p>The identifier case compares against the level's dimension id AND its folder name: they agree for a
+         * vanilla overworld and differ for a custom dimension, and a plugin asking by key means the dimension.
+         */
+        private org.bukkit.World worldByNameOrUuid(Object name) {
+                String wanted = name instanceof java.util.UUID ? name.toString() : String.valueOf(name);
+                for (org.bukkit.World world : worlds()) {
+                        if (world.getName().equals(wanted) || world.getUID().toString().equals(wanted)) return world;
+                }
+                for (net.minecraft.server.level.ServerLevel level : minecraft.getAllLevels()) {
+                        if (level.dimension().identifier().toString().equals(wanted)) {
+                                return ForbricWorld.of(level, this);
+                        }
+                }
+		return null;
+	}
+
+	private java.util.Collection<? extends org.bukkit.entity.Player> onlinePlayers() {
+		if (minecraft == null) return java.util.List.of();
+		java.util.List<org.bukkit.entity.Player> players = new java.util.ArrayList<>();
+		for (net.minecraft.server.level.ServerPlayer player : minecraft.getPlayerList().getPlayers()) {
+			players.add(ForbricPlayer.of(player, this));
+		}
+		return players;
+	}
+
+	/**
+	 * Whether a player is an operator, asked of the game's own op list.
+	 *
+	 * <p>Not a Bukkit permission: the game decides what is privileged, and a bridge that consulted the API's
+	 * table instead would let a plugin's own default grant op powers. The name is needed because the op list
+	 * is keyed by name-and-id, and a player who changed their name is listed under both.
+	 */
+	boolean isOperator(java.util.UUID player) {
+		if (minecraft == null) return false;
+		// The op list is keyed by name AND id, and the name is what an existing entry was written with, so
+		// the lookup has to take the name from the player rather than pass a placeholder.
+		net.minecraft.server.level.ServerPlayer online = minecraft.getPlayerList().getPlayer(player);
+		if (online == null) return false;
+		return minecraft.getPlayerList().isOp(
+				new net.minecraft.server.players.NameAndId(player, online.getScoreboardName()));
+	}
+
+	/**
+	 * Enables a plugin, firing the lifecycle handlers it registered during its own onEnable.
+	 *
+	 * <p>Lives here rather than in the plugin manager because the handlers need the game's Brigadier
+	 * dispatcher, and the only object holding a {@code MinecraftServer} is this one.
+	 */
+	void enablePlugin(PluginHandle handle) {
+		if (minecraft == null) {
+			throw new IllegalStateException("[Forbric/Bukkit] cannot enable a plugin without a running "
+							+ "server: lifecycle handlers are fired against the game's command dispatcher");
+		}
+		handle.enable(minecraft.getCommands().getDispatcher(), this);
+	}
+
+	private int maxPlayers() {
+		return minecraft == null ? 0 : minecraft.getPlayerList().getMaxPlayers();
+	}
+
+	/** The game's own server, or null. A bridge with no worlds answers from this being absent. */
+	net.minecraft.server.MinecraftServer minecraft() {
+		return minecraft;
 	}
 
 	@Override
@@ -50,33 +187,33 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getName() {
+	public java.lang.String getName() {
 		return BRAND;
 	}
 
 	@Override
-	public String getVersion() {
+	public java.lang.String getVersion() {
 		return version;
 	}
 
 	@Override
-	public String getBukkitVersion() {
+	public java.lang.String getBukkitVersion() {
 		return BUKKIT_VERSION;
 	}
 
 	@Override
-	public String getMinecraftVersion() {
+	public java.lang.String getMinecraftVersion() {
 		return MINECRAFT_VERSION;
 	}
 
 	@Override
 	public java.util.Collection<? extends org.bukkit.entity.Player> getOnlinePlayers() {
-		throw notYet("getOnlinePlayers");
+		return onlinePlayers();
 	}
 
 	@Override
 	public int getMaxPlayers() {
-		throw notYet("getMaxPlayers");
+		return maxPlayers();
 	}
 
 	@Override
@@ -100,12 +237,12 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getIp() {
+	public java.lang.String getIp() {
 		throw notYet("getIp");
 	}
 
 	@Override
-	public String getWorldType() {
+	public java.lang.String getWorldType() {
 		throw notYet("getWorldType");
 	}
 
@@ -135,12 +272,12 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public java.util.List<String> getInitialEnabledPacks() {
+	public java.util.List<java.lang.String> getInitialEnabledPacks() {
 		throw notYet("getInitialEnabledPacks");
 	}
 
 	@Override
-	public java.util.List<String> getInitialDisabledPacks() {
+	public java.util.List<java.lang.String> getInitialDisabledPacks() {
 		throw notYet("getInitialDisabledPacks");
 	}
 
@@ -155,17 +292,17 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getResourcePack() {
+	public java.lang.String getResourcePack() {
 		throw notYet("getResourcePack");
 	}
 
 	@Override
-	public String getResourcePackHash() {
+	public java.lang.String getResourcePackHash() {
 		throw notYet("getResourcePackHash");
 	}
 
 	@Override
-	public String getResourcePackPrompt() {
+	public java.lang.String getResourcePackPrompt() {
 		throw notYet("getResourcePackPrompt");
 	}
 
@@ -205,7 +342,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getUpdateFolder() {
+	public java.lang.String getUpdateFolder() {
 		return "update";
 	}
 
@@ -225,17 +362,17 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.entity.Player getPlayer(String arg0) {
+	public org.bukkit.entity.Player getPlayer(java.lang.String arg0) {
 		throw notYet("getPlayer");
 	}
 
 	@Override
-	public org.bukkit.entity.Player getPlayerExact(String arg0) {
+	public org.bukkit.entity.Player getPlayerExact(java.lang.String arg0) {
 		throw notYet("getPlayerExact");
 	}
 
 	@Override
-	public java.util.List<org.bukkit.entity.Player> matchPlayer(String arg0) {
+	public java.util.List<org.bukkit.entity.Player> matchPlayer(java.lang.String arg0) {
 		throw notYet("matchPlayer");
 	}
 
@@ -245,7 +382,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public java.util.UUID getPlayerUniqueId(String arg0) {
+	public java.util.UUID getPlayerUniqueId(java.lang.String arg0) {
 		throw notYet("getPlayerUniqueId");
 	}
 
@@ -266,7 +403,7 @@ final class ServerImpl implements org.bukkit.Server {
 
 	@Override
 	public java.util.List<org.bukkit.World> getWorlds() {
-		throw notYet("getWorlds");
+		return worlds();
 	}
 
 	@Override
@@ -280,7 +417,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public boolean unloadWorld(String arg0, boolean arg1) {
+	public boolean unloadWorld(java.lang.String arg0, boolean arg1) {
 		throw notYet("unloadWorld");
 	}
 
@@ -300,8 +437,8 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.World getWorld(String arg0) {
-		throw notYet("getWorld");
+	public org.bukkit.World getWorld(java.lang.String name) {
+		return worldByNameOrUuid(name);
 	}
 
 	@Override
@@ -365,7 +502,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.command.PluginCommand getPluginCommand(String arg0) {
+	public org.bukkit.command.PluginCommand getPluginCommand(java.lang.String arg0) {
 		throw notYet("getPluginCommand");
 	}
 
@@ -375,7 +512,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public boolean dispatchCommand(org.bukkit.command.CommandSender arg0, String arg1) throws org.bukkit.command.CommandException {
+	public boolean dispatchCommand(org.bukkit.command.CommandSender arg0, java.lang.String arg1) throws org.bukkit.command.CommandException {
 		throw notYet("dispatchCommand");
 	}
 
@@ -430,7 +567,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public java.util.Map<String, String[]> getCommandAliases() {
+	public java.util.Map<java.lang.String, java.lang.String[]> getCommandAliases() {
 		throw notYet("getCommandAliases");
 	}
 
@@ -485,17 +622,17 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public int broadcast(net.kyori.adventure.text.Component arg0, String arg1) {
+	public int broadcast(net.kyori.adventure.text.Component arg0, java.lang.String arg1) {
 		throw notYet("broadcast");
 	}
 
 	@Override
-	public org.bukkit.OfflinePlayer getOfflinePlayer(String arg0) {
+	public org.bukkit.OfflinePlayer getOfflinePlayer(java.lang.String arg0) {
 		throw notYet("getOfflinePlayer");
 	}
 
 	@Override
-	public org.bukkit.OfflinePlayer getOfflinePlayerIfCached(String arg0) {
+	public org.bukkit.OfflinePlayer getOfflinePlayerIfCached(java.lang.String arg0) {
 		throw notYet("getOfflinePlayerIfCached");
 	}
 
@@ -505,7 +642,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.profile.PlayerProfile createPlayerProfile(java.util.UUID arg0, String arg1) {
+	public org.bukkit.profile.PlayerProfile createPlayerProfile(java.util.UUID arg0, java.lang.String arg1) {
 		throw notYet("createPlayerProfile");
 	}
 
@@ -515,22 +652,22 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.profile.PlayerProfile createPlayerProfile(String arg0) {
+	public org.bukkit.profile.PlayerProfile createPlayerProfile(java.lang.String arg0) {
 		throw notYet("createPlayerProfile");
 	}
 
 	@Override
-	public java.util.Set<String> getIPBans() {
+	public java.util.Set<java.lang.String> getIPBans() {
 		throw notYet("getIPBans");
 	}
 
 	@Override
-	public void banIP(String arg0) {
+	public void banIP(java.lang.String arg0) {
 		throw notYet("banIP");
 	}
 
 	@Override
-	public void unbanIP(String arg0) {
+	public void unbanIP(java.lang.String arg0) {
 		throw notYet("unbanIP");
 	}
 
@@ -625,22 +762,22 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, org.bukkit.event.inventory.InventoryType arg1, String arg2) {
+	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, org.bukkit.event.inventory.InventoryType arg1, java.lang.String arg2) {
 		throw notYet("createInventory");
 	}
 
 	@Override
-	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, int arg1) throws IllegalArgumentException {
+	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, int arg1) throws java.lang.IllegalArgumentException {
 		throw notYet("createInventory");
 	}
 
 	@Override
-	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, int arg1, net.kyori.adventure.text.Component arg2) throws IllegalArgumentException {
+	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, int arg1, net.kyori.adventure.text.Component arg2) throws java.lang.IllegalArgumentException {
 		throw notYet("createInventory");
 	}
 
 	@Override
-	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, int arg1, String arg2) throws IllegalArgumentException {
+	public org.bukkit.inventory.Inventory createInventory(org.bukkit.inventory.InventoryHolder arg0, int arg1, java.lang.String arg2) throws java.lang.IllegalArgumentException {
 		throw notYet("createInventory");
 	}
 
@@ -650,7 +787,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.inventory.Merchant createMerchant(String arg0) {
+	public org.bukkit.inventory.Merchant createMerchant(java.lang.String arg0) {
 		throw notYet("createMerchant");
 	}
 
@@ -690,12 +827,12 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getMotd() {
+	public java.lang.String getMotd() {
 		throw notYet("getMotd");
 	}
 
 	@Override
-	public void setMotd(String arg0) {
+	public void setMotd(java.lang.String arg0) {
 		throw notYet("setMotd");
 	}
 
@@ -705,7 +842,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getShutdownMessage() {
+	public java.lang.String getShutdownMessage() {
 		throw notYet("getShutdownMessage");
 	}
 
@@ -730,7 +867,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.scoreboard.Criteria getScoreboardCriteria(String arg0) {
+	public org.bukkit.scoreboard.Criteria getScoreboardCriteria(java.lang.String arg0) {
 		throw notYet("getScoreboardCriteria");
 	}
 
@@ -740,12 +877,12 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.util.CachedServerIcon loadServerIcon(java.io.File arg0) throws IllegalArgumentException, Exception {
+	public org.bukkit.util.CachedServerIcon loadServerIcon(java.io.File arg0) throws java.lang.IllegalArgumentException, java.lang.Exception {
 		throw notYet("loadServerIcon");
 	}
 
 	@Override
-	public org.bukkit.util.CachedServerIcon loadServerIcon(java.awt.image.BufferedImage arg0) throws IllegalArgumentException, Exception {
+	public org.bukkit.util.CachedServerIcon loadServerIcon(java.awt.image.BufferedImage arg0) throws java.lang.IllegalArgumentException, java.lang.Exception {
 		throw notYet("loadServerIcon");
 	}
 
@@ -775,12 +912,12 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.boss.BossBar createBossBar(String arg0, org.bukkit.boss.BarColor arg1, org.bukkit.boss.BarStyle arg2, org.bukkit.boss.BarFlag... arg3) {
+	public org.bukkit.boss.BossBar createBossBar(java.lang.String arg0, org.bukkit.boss.BarColor arg1, org.bukkit.boss.BarStyle arg2, org.bukkit.boss.BarFlag... arg3) {
 		throw notYet("createBossBar");
 	}
 
 	@Override
-	public org.bukkit.boss.KeyedBossBar createBossBar(org.bukkit.NamespacedKey arg0, String arg1, org.bukkit.boss.BarColor arg2, org.bukkit.boss.BarStyle arg3, org.bukkit.boss.BarFlag... arg4) {
+	public org.bukkit.boss.KeyedBossBar createBossBar(org.bukkit.NamespacedKey arg0, java.lang.String arg1, org.bukkit.boss.BarColor arg2, org.bukkit.boss.BarStyle arg3, org.bukkit.boss.BarFlag... arg4) {
 		throw notYet("createBossBar");
 	}
 
@@ -819,9 +956,25 @@ final class ServerImpl implements org.bukkit.Server {
 		throw notYet("getAverageTickTime");
 	}
 
+	/**
+	 * The command map the plugin manager dispatches through.
+	 *
+	 * <p>This is the same instance {@link #commandMap()} returns, and the same one the lifecycle
+	 * registration path writes into. A plugin that registers its command by hand instead of declaring it
+	 * in {@code plugin.yml} — which is what {@code getCommandMap().register(...)} is for — therefore lands
+	 * where the dispatcher will find it.
+	 *
+	 * <p>It is not null by the time a plugin can ask: {@link #installPluginManager} runs before any plugin
+	 * is enabled. A null here would mean a plugin was enabled before the bridge was built, which is a
+	 * bridge bug and not something to paper over with an empty map.
+	 */
 	@Override
 	public org.bukkit.command.CommandMap getCommandMap() {
-		throw notYet("getCommandMap");
+		if (commandMap == null) {
+			throw new IllegalStateException("[Forbric/Bukkit] a plugin asked for the command map before the "
+					+ "bridge built one — plugins are enabled after installPluginManager, so this is a bridge bug");
+		}
+		return commandMap;
 	}
 
 	@Override
@@ -845,22 +998,22 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public org.bukkit.block.data.BlockData createBlockData(String arg0) throws IllegalArgumentException {
+	public org.bukkit.block.data.BlockData createBlockData(java.lang.String arg0) throws java.lang.IllegalArgumentException {
 		throw notYet("createBlockData");
 	}
 
 	@Override
-	public org.bukkit.block.data.BlockData createBlockData(org.bukkit.Material arg0, String arg1) throws IllegalArgumentException {
+	public org.bukkit.block.data.BlockData createBlockData(org.bukkit.Material arg0, java.lang.String arg1) throws java.lang.IllegalArgumentException {
 		throw notYet("createBlockData");
 	}
 
 	@Override
-	public <T extends org.bukkit.Keyed> org.bukkit.Tag<T> getTag(String arg0, org.bukkit.NamespacedKey arg1, Class<T> arg2) {
+	public <T extends org.bukkit.Keyed> org.bukkit.Tag<T> getTag(java.lang.String arg0, org.bukkit.NamespacedKey arg1, java.lang.Class<T> arg2) {
 		throw notYet("getTag");
 	}
 
 	@Override
-	public <T extends org.bukkit.Keyed> Iterable<org.bukkit.Tag<T>> getTags(String arg0, Class<T> arg1) {
+	public <T extends org.bukkit.Keyed> java.lang.Iterable<org.bukkit.Tag<T>> getTags(java.lang.String arg0, java.lang.Class<T> arg1) {
 		throw notYet("getTags");
 	}
 
@@ -870,7 +1023,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public java.util.List<org.bukkit.entity.Entity> selectEntities(org.bukkit.command.CommandSender arg0, String arg1) throws IllegalArgumentException {
+	public java.util.List<org.bukkit.entity.Entity> selectEntities(org.bukkit.command.CommandSender arg0, java.lang.String arg1) throws java.lang.IllegalArgumentException {
 		throw notYet("selectEntities");
 	}
 
@@ -880,7 +1033,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public <T extends org.bukkit.Keyed> org.bukkit.Registry<T> getRegistry(Class<T> arg0) {
+	public <T extends org.bukkit.Keyed> org.bukkit.Registry<T> getRegistry(java.lang.Class<T> arg0) {
 		throw notYet("getRegistry");
 	}
 
@@ -915,7 +1068,7 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public String getPermissionMessage() {
+	public java.lang.String getPermissionMessage() {
 		throw notYet("getPermissionMessage");
 	}
 
@@ -930,17 +1083,17 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public com.destroystokyo.paper.profile.PlayerProfile createProfile(String arg0) {
+	public com.destroystokyo.paper.profile.PlayerProfile createProfile(java.lang.String arg0) {
 		throw notYet("createProfile");
 	}
 
 	@Override
-	public com.destroystokyo.paper.profile.PlayerProfile createProfile(java.util.UUID arg0, String arg1) {
+	public com.destroystokyo.paper.profile.PlayerProfile createProfile(java.util.UUID arg0, java.lang.String arg1) {
 		throw notYet("createProfile");
 	}
 
 	@Override
-	public com.destroystokyo.paper.profile.PlayerProfile createProfileExact(java.util.UUID arg0, String arg1) {
+	public com.destroystokyo.paper.profile.PlayerProfile createProfileExact(java.util.UUID arg0, java.lang.String arg1) {
 		throw notYet("createProfileExact");
 	}
 
@@ -1040,17 +1193,16 @@ final class ServerImpl implements org.bukkit.Server {
 	}
 
 	@Override
-	public void sendPluginMessage(org.bukkit.plugin.Plugin arg0, String arg1, byte[] arg2) {
+	public void sendPluginMessage(org.bukkit.plugin.Plugin arg0, java.lang.String arg1, byte[] arg2) {
 		throw notYet("sendPluginMessage");
 	}
 
 	@Override
-	public java.util.Set<String> getListeningPluginChannels() {
+	public java.util.Set<java.lang.String> getListeningPluginChannels() {
 		throw notYet("getListeningPluginChannels");
 	}
 
 	@Override
-	public Iterable<? extends net.kyori.adventure.audience.Audience> audiences() {
+	public java.lang.Iterable<? extends net.kyori.adventure.audience.Audience> audiences() {
 		throw notYet("audiences");
-	}
-}
+	}}

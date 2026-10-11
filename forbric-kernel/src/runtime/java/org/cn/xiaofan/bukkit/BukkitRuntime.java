@@ -33,10 +33,16 @@ public final class BukkitRuntime {
 	 * @param dataFolder    the directory per-plugin data folders are created under
 	 * @param loader        the loader that defined this class; passed through so plugin class loaders have the
 	 *                      game's classes as their parent rather than whatever defined the bridge
+	 * @param server        the running {@code net.minecraft.server.MinecraftServer}, the thing every {@code World}
+	 *                      and {@code Player} the plugins see is ultimately reached through. Typed as
+	 *                      {@code Object} on purpose: the caller is the boot-side {@code BukkitBridgeLauncher},
+	 *                      which links no game type, and a parameter typed {@code MinecraftServer} would drag the
+	 *                      whole game onto its signature.
 	 * @return the running bridge, whose {@link #stop()} the kernel calls on shutdown
 	 */
-	public static BukkitRuntime start(Path pluginsFolder, Path dataFolder, ClassLoader loader) throws Exception {
-		BridgeBootstrap bridge = BridgeBootstrap.start(pluginsFolder, dataFolder, loader);
+	public static BukkitRuntime start(Path pluginsFolder, Path dataFolder, ClassLoader loader, Object server)
+			throws Exception {
+		BridgeBootstrap bridge = BridgeBootstrap.start(pluginsFolder, dataFolder, loader, server);
 		return new BukkitRuntime(bridge);
 	}
 

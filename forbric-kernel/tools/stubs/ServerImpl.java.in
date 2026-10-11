@@ -1,0 +1,184 @@
+/*
+ * Forbric Bukkit bridge — the {@code Server} a plugin receives.  *** GENERATED FILE — DO NOT EDIT ***
+ *
+ * Produced by tools/gen_stub.py from tools/stubs/ServerImpl.table. Editing this file by hand means the next
+ * generation silently discards the edit; the change belongs in the table or the template.
+ */
+package {{package}};
+
+/**
+ * The {@code org.bukkit.Server} a plugin receives from {@code getServer()}.
+ *
+ * <p>Paper's {@code Server} declares ~200 abstract methods. This bridge answers the ones a plugin needs to
+ * start — its identity, its logger, the plugin manager, and the worlds and players it will actually look for —
+ * and refuses the rest with a named {@link UnsupportedOperationException}. Refusing loudly is deliberate: a
+ * stubbed {@code getWorld()} returning {@code null} turns "this bridge has no worlds" into a
+ * {@code NullPointerException} inside the plugin, several frames away from the cause.
+ *
+ * <p>Every method carries the interface's own signature, generated from the API jar, so a plugin links against
+ * this class exactly as it would against Paper's.
+ */
+final class {{class}} implements {{interface}} {
+
+	static final String BRAND = "Forbric";
+	static final String BUKKIT_VERSION = "26.2-R0.1-SNAPSHOT";
+	static final String MINECRAFT_VERSION = "26.2";
+
+	private final java.util.logging.Logger logger;
+	/**
+	 * The plugin manager, or null until {@link #installPluginManager()} has run.
+	 *
+	 * <p>Not final, because it CANNOT be built before this instance exists: Paper's own
+	 * {@code SimplePluginManager} takes a {@code Server} in its constructor, and every command it
+	 * registers is registered against a {@code SimpleCommandMap} that also takes one. The way out is to
+	 * construct this object with null and fill the field in immediately afterwards, which is what
+	 * {@link BridgeBootstrap} does before any plugin loads. A plugin never sees the null state; the
+	 * only caller that could was the constructor.
+	 */
+	private org.bukkit.plugin.PluginManager pluginManager;
+	private org.bukkit.command.SimpleCommandMap commandMap;
+	private final java.nio.file.Path pluginsFolder;
+	private final String version;
+
+	/**
+	 * The running server, or null when the kernel had none to hand over.
+	 *
+	 * <p>Typed as the game's own class rather than as this bridge's wrapper of it: every {@code World} a plugin
+	 * asks for is one of this server's {@code ServerLevel}s, and the conversion belongs at the point of use.
+	 */
+	private final net.minecraft.server.MinecraftServer minecraft;
+
+	{{class}}(java.util.logging.Logger logger, org.bukkit.plugin.PluginManager pluginManager,
+			java.nio.file.Path pluginsFolder, String version, net.minecraft.server.MinecraftServer minecraft) {
+		this.logger = logger;
+		this.pluginManager = pluginManager;
+		this.pluginsFolder = pluginsFolder;
+		this.version = version;
+		this.minecraft = minecraft;
+	}
+
+	/**
+	 * Builds the plugin manager and the command map behind it, now that {@code this} exists to hand to them.
+	 *
+	 * <p>Both are Bukkit's own classes — {@code SimplePluginManager} and {@code SimpleCommandMap} live in
+	 * paper-api and are the implementations the real server uses. Writing our own would mean re-deriving
+	 * event-priority ordering, permission default recalculation, and the plugin-file-to-loader table, each of
+	 * which has behaviour a plugin can observe. There is nothing Forbric-specific about any of them, so the
+	 * honest thing is to use the ones Paper ships.
+	 *
+	 * <p>The command map is created here rather than passed in because a plugin registering a command through
+	 * the lifecycle events needs it to reach the same map the dispatcher reads. One instance, kept.
+	 */
+	void installPluginManager(java.util.List<PluginHandle> handles) {
+		this.commandMap = new org.bukkit.command.SimpleCommandMap(this, new java.util.HashMap<>());
+		// Bukkit's manager for the events and permissions, wrapped so the six methods that read its
+		// plugin list are answered from the handles the bridge actually loaded.
+		this.pluginManager = new ForbricPluginManager(
+				new org.bukkit.plugin.SimplePluginManager(this, this.commandMap), handles, this);
+	}
+
+	/**
+	 * The command map the plugin manager dispatches through, or null before {@link #installPluginManager()}.
+	 *
+	 * <p>Kept rather than reached for through the manager: a plugin registering a command must land in the
+	 * SAME map the console dispatcher reads, and that is this instance.
+	 */
+	org.bukkit.command.SimpleCommandMap commandMap() {
+		return commandMap;
+	}
+
+	private static UnsupportedOperationException notYet(String what) {
+		return new UnsupportedOperationException(
+				"[Forbric/Bukkit] {{interface}}." + what + "() is not implemented by this bridge yet");
+	}
+
+	/**
+	 * Every loaded world, wrapped.
+	 *
+	 * <p>{@link ForbricWorld#of} is the one place a {@code ServerLevel} becomes an {@code org.bukkit.World}.
+	 * Wrapping per call rather than caching, so a world reloaded under the same name is not answered from a
+	 * stale wrapper.
+	 */
+	private java.util.List<org.bukkit.World> worlds() {
+		if (minecraft == null) return java.util.List.of();
+		java.util.List<org.bukkit.World> wrapped = new java.util.ArrayList<>();
+		for (net.minecraft.server.level.ServerLevel level : minecraft.getAllLevels()) {
+			wrapped.add(ForbricWorld.of(level, this));
+		}
+		return wrapped;
+        }
+
+	/**
+         * One world by name, unique id, or key.
+         *
+         * <p>Bukkit names a world by its folder name and by a UUID; Minecraft identifies one by a
+         * {@code ResourceKey}, whose identifier is the world's dimension id ({@code minecraft:overworld}, or a
+         * pack's own). All three reach the same lookup because each is a different spelling of "which world do
+         * you mean", and a plugin holding a saved reference may have any of them.
+         *
+         * <p>The identifier case compares against the level's dimension id AND its folder name: they agree for a
+         * vanilla overworld and differ for a custom dimension, and a plugin asking by key means the dimension.
+         */
+        private org.bukkit.World worldByNameOrUuid(Object name) {
+                String wanted = name instanceof java.util.UUID ? name.toString() : String.valueOf(name);
+                for (org.bukkit.World world : worlds()) {
+                        if (world.getName().equals(wanted) || world.getUID().toString().equals(wanted)) return world;
+                }
+                for (net.minecraft.server.level.ServerLevel level : minecraft.getAllLevels()) {
+                        if (level.dimension().identifier().toString().equals(wanted)) {
+                                return ForbricWorld.of(level, this);
+                        }
+                }
+		return null;
+	}
+
+	private java.util.Collection<? extends org.bukkit.entity.Player> onlinePlayers() {
+		if (minecraft == null) return java.util.List.of();
+		java.util.List<org.bukkit.entity.Player> players = new java.util.ArrayList<>();
+		for (net.minecraft.server.level.ServerPlayer player : minecraft.getPlayerList().getPlayers()) {
+			players.add(ForbricPlayer.of(player, this));
+		}
+		return players;
+	}
+
+	/**
+	 * Whether a player is an operator, asked of the game's own op list.
+	 *
+	 * <p>Not a Bukkit permission: the game decides what is privileged, and a bridge that consulted the API's
+	 * table instead would let a plugin's own default grant op powers. The name is needed because the op list
+	 * is keyed by name-and-id, and a player who changed their name is listed under both.
+	 */
+	boolean isOperator(java.util.UUID player) {
+		if (minecraft == null) return false;
+		// The op list is keyed by name AND id, and the name is what an existing entry was written with, so
+		// the lookup has to take the name from the player rather than pass a placeholder.
+		net.minecraft.server.level.ServerPlayer online = minecraft.getPlayerList().getPlayer(player);
+		if (online == null) return false;
+		return minecraft.getPlayerList().isOp(
+				new net.minecraft.server.players.NameAndId(player, online.getScoreboardName()));
+	}
+
+	/**
+	 * Enables a plugin, firing the lifecycle handlers it registered during its own onEnable.
+	 *
+	 * <p>Lives here rather than in the plugin manager because the handlers need the game's Brigadier
+	 * dispatcher, and the only object holding a {@code MinecraftServer} is this one.
+	 */
+	void enablePlugin(PluginHandle handle) {
+		if (minecraft == null) {
+			throw new IllegalStateException("[Forbric/Bukkit] cannot enable a plugin without a running "
+							+ "server: lifecycle handlers are fired against the game's command dispatcher");
+		}
+		handle.enable(minecraft.getCommands().getDispatcher(), this);
+	}
+
+	private int maxPlayers() {
+		return minecraft == null ? 0 : minecraft.getPlayerList().getMaxPlayers();
+	}
+
+	/** The game's own server, or null. A bridge with no worlds answers from this being absent. */
+	net.minecraft.server.MinecraftServer minecraft() {
+		return minecraft;
+	}
+
+{{methods}}}

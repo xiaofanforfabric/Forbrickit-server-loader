@@ -1,0 +1,221 @@
+/*
+ * Forbric Bukkit bridge — an {@code org.bukkit.entity.Player} backed by a Minecraft {@code ServerPlayer}.
+ * *** GENERATED FILE — DO NOT EDIT ***
+ *
+ * Produced by tools/gen_stub.py from tools/stubs/ForbricPlayer.table. Edits belong in the table or this template.
+ */
+package {{package}};
+
+/**
+ * One online player, as a plugin sees it.
+ *
+ * <p>A <b>live handle</b> on a connected client, the same way {@link ForbricBlock} is one on a corner: identity
+ * is the account, not the wrapper. Bukkit's contract says a {@code Player} reflects the connection as it is now,
+ * so this class holds the {@code ServerPlayer} and asks it every time. Two wrappers for one account are equal
+ * and hash alike, which is what lets a plugin compare a player from an event with one from the server.
+ *
+ * <p><b>An account has three names and they are not interchangeable.</b> The game profile's name is the account
+ * name a player logs in with; the scoreboard name is what team prefixes decorate; and the display name is what
+ * chat shows, which a plugin may set. Bukkit keeps all three, and so does this. The profile name is the one to
+ * key a map by, because the other two are presentation and change.
+ *
+ * <p><b>Identity is the UUID.</b> A name can be changed, and on an offline-mode server can be claimed by anyone,
+ * so {@link #getUniqueId()} is the only stable key. The name is offered for display and for the common case; a
+ * plugin that stores anything should store the UUID.
+ */
+final class {{class}} implements {{interface}} {
+
+        private final net.minecraft.server.level.ServerPlayer player;
+        private final ServerImpl server;
+
+        private {{class}}(net.minecraft.server.level.ServerPlayer player, ServerImpl server) {
+                this.player = player;
+                this.server = server;
+        }
+
+        /**
+         * Wraps a player. The one place a {@code ServerPlayer} becomes an {@code org.bukkit.entity.Player}.
+         *
+         * <p>A fresh wrapper per call rather than a cache, matching the rest of the bridge: equality is by
+         * account, so nothing downstream can tell two wrappers apart — and a cache would have to be invalidated
+         * when the player disconnects, which is a correctness problem bought for nothing.
+         */
+        static {{class}} of(net.minecraft.server.level.ServerPlayer player, ServerImpl server) {
+                return new {{class}}(player, server);
+        }
+
+        /** The wrapped player, for the bridge's own use by {@link ForbricWorld} and the event layer. */
+        net.minecraft.server.level.ServerPlayer player() {
+                return player;
+        }
+
+        private static UnsupportedOperationException notYet(String what) {
+                return new UnsupportedOperationException(
+                                "[Forbric/Bukkit] Player." + what + "() is not implemented by this bridge yet");
+        }
+
+        /**
+         * The account name this player logs in with. Not necessarily unique — see the class comment.
+         *
+         * <p>Read from the scoreboard name rather than from the game profile, so this bridge needs no authlib:
+         * the profile is a Mojang authentication type the game never sends over the wire, and reaching it here
+         * would put a second library on the game-side classpath for one string. Undecorated, the two are the
+         * same name.
+         */
+        @Override
+        public String getName() {
+                return player.getScoreboardName();
+        }
+
+        /**
+         * This player's account id.
+         *
+         * <p>The one stable key: a name can change, and on an offline-mode server can be claimed by anyone.
+         */
+        @Override
+        public java.util.UUID getUniqueId() {
+                return player.getUUID();
+        }
+
+        /** What the player list shows: the scoreboard name, which teams may decorate. */
+        @Override
+        public String getPlayerListName() {
+                return player.getScoreboardName();
+        }
+
+        /**
+         * Sets the player-list name.
+         *
+         * <p>Refuses rather than silently accepting: the game reads that name from the scoreboard, and a bridge
+         * that stored it in a field of its own would make the getter and setter disagree with what other plugins
+         * see. Marking it unimplemented keeps the two from drifting apart.
+         */
+        @Override
+        public void setPlayerListName(String name) {
+                throw notYet("setPlayerListName");
+        }
+
+        /** What chat shows this player as. */
+        @Override
+        public String getDisplayName() {
+                return getPlayerListName();
+        }
+
+        /** Sets what chat shows this player as. Refuses for the same reason as {@link #setPlayerListName}. */
+        @Override
+        public void setDisplayName(String name) {
+                throw notYet("setDisplayName");
+        }
+
+        /**
+         * Whether this player is still connected.
+         *
+         * <p>Asked of the connection rather than of a flag this class keeps: a player object outlives the
+         * connection, and a plugin holding one after a disconnect must not be told the player is fine.
+         */
+        @Override
+        public boolean isOnline() {
+                return !player.hasDisconnected();
+        }
+
+        /** Whether this player is connected, which for a server-side handle is the same question. */
+        @Override
+        public boolean isConnected() {
+                return isOnline();
+        }
+
+        /** The world this player is in right now. */
+        @Override
+        public org.bukkit.World getWorld() {
+                return ForbricWorld.of(player.level(), server);
+        }
+
+        /** Where this player is, to the precision the game keeps. */
+        @Override
+        public org.bukkit.Location getLocation() {
+                net.minecraft.world.phys.Vec3 position = player.position();
+                return new org.bukkit.Location(ForbricWorld.of(player.level(), server),
+                                position.x(), position.y(), position.z(),
+                                player.getYRot(), player.getXRot());
+        }
+
+        /** The server this player is on. */
+        @Override
+        public ServerImpl getServer() {
+                return server;
+        }
+
+        /**
+         * Sends a plain-text message to this player. Refuses until the two component systems are bridged.
+         *
+         * <p>Bukkit and Paper hand a plugin a <b>Kyori Adventure</b> {@code Component}; the game sends a
+         * {@code net.minecraft.network.chat.Component}. They model the same JSON but are different object graphs,
+         * and there is no identity conversion — one has to be serialised and the other parsed.
+         *
+         * <p>Refusing rather than sending plain text: a plugin's {@code sendMessage(Component.text("hi", RED))}
+         * that arrives uncoloured looks like it worked, and the plugin author has no way to tell the bridge
+         * dropped the styling. A message that names the missing piece is easier to act on than a wrong colour.
+         *
+         * <p>The {@code String} overload is the one this bridge answers, because the Adventure one is a
+         * {@code default} on the interface and overriding it would be re-answering a method Paper already
+         * implemented in terms of this one.
+         */
+        @Override
+        public void sendMessage(String message) {
+                throw notYet("sendMessage");
+        }
+
+        /**
+         * Sends a plain action-bar message.
+         *
+         * <p>The {@code String} overload is the one this bridge answers; the BaseComponent and Adventure
+         * overloads are refused, for the same reason {@link #sendMessage} is — styling that silently disappears
+         * reads as success.
+         */
+        @Override
+        public void sendActionBar(String message) {
+                throw notYet("sendActionBar");
+        }
+
+        /**
+         * Disconnects this player with a reason.
+         *
+         * <p>The two-argument form is the abstract one; Bukkit gives a one-argument {@code kick(Component)} as a
+         * {@code default} that supplies a cause, so overriding it here would be answering a method that already
+         * has an answer.
+         */
+        @Override
+        public void kick(net.kyori.adventure.text.Component message, org.bukkit.event.player.PlayerKickEvent.Cause cause) {
+                throw notYet("kick");
+        }
+
+        /**
+         * Equal to any other handle on the same account.
+         *
+         * <p>By account id, not object identity: a plugin can reach the same player two ways (from a world, from
+         * an event) and must be able to compare the results — or put them in a set.
+         */
+        @Override
+        public boolean equals(Object other) {
+                if (this == other) {
+                        return true;
+                }
+                if (!(other instanceof ForbricPlayer)) {
+                        return false;
+                }
+                return getUniqueId().equals(((ForbricPlayer) other).getUniqueId());
+        }
+
+        /** Hashes by the account id, matching {@link #equals}. */
+        @Override
+        public int hashCode() {
+                return getUniqueId().hashCode();
+        }
+
+        /** Names the player, so a failed assertion says who. */
+        @Override
+        public String toString() {
+                return "ForbricPlayer[" + getName() + "]";
+        }
+
+{{methods}}}

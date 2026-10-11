@@ -44,10 +44,12 @@ import net.forbric.kernel.transform.ChunkExecutorGuardInjector;
 import net.forbric.kernel.transform.ClientPackHookInjector;
 import net.forbric.kernel.transform.ClientSmokeTickInjector;
 import net.forbric.kernel.transform.CommonNetworkInteropInjector;
+import net.forbric.kernel.transform.ClientCommandLogInjector;
 import net.forbric.kernel.transform.ForgeOverlayNeuterInjector;
 import net.forbric.kernel.transform.DataPackHookInjector;
 import net.forbric.kernel.transform.DuplicateLambdaPruneInjector;
 import net.forbric.kernel.transform.ExitHookInjector;
+import net.forbric.kernel.transform.VanillaClientConfigurationInjector;
 import net.forbric.kernel.transform.ForbricMergedBaseCompatTransformer;
 import net.forbric.kernel.transform.ForeignModPresenceInjector;
 import net.forbric.kernel.transform.ForgeBindingsLookupInjector;
@@ -1007,6 +1009,22 @@ public final class KernelBoot {
 		} else {
 			ForbricLog.warn("[Forbric/ChunkGuard] -Dforbric.chunkExecutorGuard=off — chunk work offered to a "
 					+ "stopped server's executor will park its caller forever instead of being refused");
+		}
+
+		// A repair, and the one that decides whether this project's premise holds: the merged base's
+		// configuration phase is NeoForge's, whose handshake disconnects any client that is not NeoForge
+		// before the registry is synchronized. Off restores that refusal, which is useful for measuring
+		// what a plugin sees on a connection that never completes.
+		KernelVanillaClientBridge.configure();
+		chain.register(TransformPhase.COREMOD, new VanillaClientConfigurationInjector());
+
+		// A diagnostic, and the one that makes "the client refused it" answerable from this side: a
+		// command a client cannot dispatch never becomes a packet, so without this line the server's
+		// log for that failure is empty and the report is a player's sentence with nothing under it.
+		// It costs one log line per command typed; -Dforbric.logCommands=off removes it.
+		KernelClientCommandLog.configure();
+		if (!"off".equalsIgnoreCase(System.getProperty("forbric.logCommands", "on"))) {
+			chain.register(TransformPhase.COREMOD, new ClientCommandLogInjector());
 		}
 
 		if (Boolean.getBoolean("forbric.kernel.registryRedirect")) {

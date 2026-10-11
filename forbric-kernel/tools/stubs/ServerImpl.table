@@ -1,0 +1,26 @@
+# The Server a plugin receives from getServer().
+#
+# Every abstract method of org.bukkit.Server is generated; the ones under [methods] get the body written here and
+# the rest refuse with a named exception. A method with overloads is named `name(arity)` — getWorld has three and
+# they want different bodies.
+
+interface: org.bukkit.Server
+class: ServerImpl
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ServerImpl.java
+template: ServerImpl.java.in
+
+[methods]
+getName = return BRAND;
+getVersion = return version;
+getBukkitVersion = return BUKKIT_VERSION;
+getMinecraftVersion = return MINECRAFT_VERSION;
+getLogger = return logger;
+getPluginManager = return pluginManager;
+getPluginsFolder = return pluginsFolder.toFile();
+isPrimaryThread = return true;
+getUpdateFolder = return "update";
+getWorlds = return worlds();
+getWorld(name) = return worldByNameOrUuid(name);
+getOnlinePlayers = return onlinePlayers();
+getMaxPlayers = return maxPlayers();

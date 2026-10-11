@@ -1,13 +1,33 @@
-Forbric — a clean-room unified Minecraft mod loader
-Copyright 2026 The Forbric Project
+Forbrickit — a hardcore unified Minecraft server: Fabric + Forge + NeoForge mods
+and Bukkit/Paper plugins in one instance
+Copyright 2026 The Forbrickit Project
+
+Forbrickit is a fork of Forbric
+(https://github.com/Ray-T-r/Minecraft-Forbric-mod-loader), which is a clean-room
+unified Minecraft mod loader. The name is the four ecosystems it unifies:
+`for` + `(fa)bric` + `(neo)bric` + `(buk)kit`. The upstream project unifies three
+of them; this fork adds the fourth, Paper's Bukkit API, through a bridge carried
+on the game side of the kernel.
+
+This fork is SERVER-SIDE ONLY. It builds a server; Bukkit and Paper are server
+APIs and a player's client installs nothing for them. The upstream client code is
+still present in this tree — it has not been removed, because this fork adapts
+the server side and the client is out of scope — but it is unmaintained here and
+its behaviour is not guaranteed. A client built from this fork's source may
+behave in ways nobody has tested. Build the Forbric client from the Forbric
+repository instead.
+
+Upstream copyright and licence are unchanged: this fork is distributed under the
+same Apache License, Version 2.0 (see LICENSE), and the modules below keep the
+provenance they had upstream.
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This repository contains four modules, all Apache-2.0:
 
     forbric-kernel/            the sovereign kernel — the current loader, which
-                               runs Fabric, MinecraftForge and NeoForge mods in
-                               one instance
+                               runs Fabric, MinecraftForge and NeoForge mods, and
+                               Bukkit/Paper plugins, in one instance
     forbric-kernel-installer/  the standalone installer for the kernel; it builds
                                the game artifacts on the user's own machine
     forbric-loader/            the first-generation loader, kept as a differential

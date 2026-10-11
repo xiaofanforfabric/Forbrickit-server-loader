@@ -64,7 +64,38 @@ public final class ForbricApiBridge implements InternalAPIBridge {
 	@Override
 	public LifecycleEventManager<Plugin> createPluginLifecycleEventManager(JavaPlugin plugin,
 			BooleanSupplier allowsLifecycleRegistration) {
-		return new ForbricLifecycleEventManager(plugin, allowsLifecycleRegistration);
+		ForbricLifecycleEventManager manager =
+				new ForbricLifecycleEventManager(plugin, allowsLifecycleRegistration);
+		// Kept so the bridge can fire the handlers a plugin registered. JavaPlugin builds its manager here
+		// and holds it privately, so this call is the only moment the object is reachable -- a registry
+		// filled any later would be filled from nowhere.
+		MANAGERS.put(plugin, manager);
+		return manager;
+	}
+
+	/**
+	 * The managers this bridge has handed out, by plugin.
+	 *
+	 * <p>Static because the bridge is instantiated by ServiceLoader and the caller that needs the managers
+	 * (the loader, after a plugin enables) has no reference to the instance.
+	 *
+	 * <p><b>An identity map, and that is not a style choice.</b> This is populated from inside
+	 * {@code JavaPlugin}'s constructor -- the only moment the manager is reachable -- and at that point
+	 * the plugin's own fields are not yet assigned. {@code PluginBase.hashCode()} is
+	 * {@code getName().hashCode()}, {@code getName()} reads {@code pluginMeta}, and {@code pluginMeta} is
+	 * still null, so a HASHING map throws a NullPointerException out of the constructor: the plugin
+	 * cannot be instantiated at all, and the message names {@code getPluginMeta()} rather than the
+	 * registry that asked. An identity map compares references and never calls the plugin's methods.
+	 *
+	 * <p>Synchronised because plugins load on the server thread here but nothing in the API promises
+	 * that forever, and the map is static.
+	 */
+	private static final java.util.Map<JavaPlugin, ForbricLifecycleEventManager> MANAGERS =
+				java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+
+	/** The lifecycle manager for a plugin, or null if it was never constructed through this bridge. */
+	static ForbricLifecycleEventManager lifecycleManagerOf(JavaPlugin plugin) {
+		return MANAGERS.get(plugin);
 	}
 
 	// ---- Not implemented -----------------------------------------------------------------------------------

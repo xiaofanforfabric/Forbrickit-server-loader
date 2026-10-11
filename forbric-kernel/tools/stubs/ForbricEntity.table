@@ -1,0 +1,28 @@
+# A non-player entity, as org.bukkit.entity.Entity.
+#
+# Small on purpose: a command source needs identity, position and the world. The remaining ~150 methods refuse with
+# a name, which is what the generator is for — a plugin calling getType() gets told the bridge does not implement
+# it rather than being handed a plausible wrong answer.
+#
+# `@template` means the body is written in the template. A table body may read `arg0`/`arg1`, or name its
+# parameters by writing `name(first,second)`.
+#
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.entity.Entity
+class: ForbricEntity
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricEntity.java
+template: ForbricEntity.java.in
+
+[methods]
+getUniqueId = @template
+getLocation = @template
+getWorld = @template
+isDead = @template
+isValid = @template
+getType = @template
+spigot = @template
+getPassengers = @template
+addPassenger(1) = @template
+removePassenger(1) = @template
