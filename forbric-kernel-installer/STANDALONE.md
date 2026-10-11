@@ -60,6 +60,7 @@ The `standaloneJar` task asserts each of those, and fails the build if one appea
 --game-dir <dir>   where the world, mods, plugins and caches live (default: .)
 --mc-dir <dir>     the Minecraft directory holding libraries/ and versions/ (default: <game-dir>)
 --jdk <path>       a Java 25+ launcher or JDK home to build and run with (default: auto-detected)
+--proxy <url>      an http(s) proxy for the downloads (default: the environment's)
 --help             this text
 ```
 
@@ -147,16 +148,11 @@ It behaves like any other server.
 ## Common problems
 
 **The first run fails at the merge with `Incompatible initializer dependency on ...ChunkGenerator#featuresPerStep`**
-→ This build does not yet download Minecraft's libraries before merging, and the merge needs them to resolve
-external types. Point `--mc-dir` at a directory with **Minecraft 26.2 installed** (it must have `libraries/`):
-
-```bash
-java -jar forbric-server.jar --mc-dir ~/.minecraft
-```
-
-`--game-dir` still holds your world and mods; the two may differ. A directory that has already run
-`dev.py prepare` also qualifies. **This is a known defect and the next release fixes it** (by having
-`ServerBootstrap` download the libraries itself).
+→ This should not happen any more: the launcher downloads Minecraft's libraries before merging, and the merge
+needs them to resolve external types (an empty `libraries/` was the cause, and the message named neither). If
+you still see it, the download step did not finish — the line `[minecraft] 68 libraries ready` is what proves it
+did, and it must appear BEFORE `== merging ==`. A proxy that only partially works is the usual reason it stops
+half-way.
 
 **`no Java 25 or newer was found`**
 → Install a JDK 25, or pass `--jdk /path/to/jdk25`. Starting Minecraft 26.2 once also works: the launcher
@@ -166,24 +162,29 @@ then downloads its own runtime.
 → Normal. Merging 88 MB of bytecode takes a minute or two; the progress lines carry a `[merge]` prefix.
 
 **Downloads hang, or `maven.neoforged.net` is unreachable**
-→ You need a proxy. Use `JAVA_TOOL_OPTIONS`: **every** JVM reads it, including the tool processes the build
-forks:
+→ You need a proxy, and the launcher reads one for you:
 
 ```bash
-export JAVA_TOOL_OPTIONS="-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890 \
-                          -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890"
+export https_proxy=http://127.0.0.1:7890
 java -jar forbric-server.jar
 ```
 
-**`-D` after `-jar` does nothing** — `-jar` is a terminator, and everything after it is a program argument:
+`https_proxy` / `http_proxy` / `all_proxy` (and their uppercase spellings) are all read, and `--proxy <url>` names
+one explicitly. The launcher turns it into system properties for itself, into the environment for every child it
+forks, and prints the one it chose:
 
-```bash
-java -jar -Dhttps.proxyHost=... forbric-server.jar   # ❌ no proxy
-java -Dhttps.proxyHost=... -jar forbric-server.jar   # ✅
+```
+[forbric] using the proxy at 127.0.0.1:7890 (from https_proxy)
 ```
 
-And the parent's `-D` is **not** inherited by the child processes the build forks, which is why
-`JAVA_TOOL_OPTIONS` is more reliable than `-D`.
+**This matters more than it looks.** The build forks several tool processes; they inherit no properties from the
+parent, so a proxy passed only as `-D` reaches the parent and not them. And `-D` after `-jar` does nothing at all,
+because `-jar` is a terminator:
+
+```bash
+java -jar -Dhttps.proxyHost=... forbric-server.jar   # ❌ a program argument, not a JVM option
+java -Dhttps.proxyHost=... -jar forbric-server.jar   # ✅ works, but does not reach the children
+```
 
 **The build fails with "merge-tools.jar not found"**
 → The jar is missing from the launcher, which is a build problem. Re-run `./gradlew standaloneJar`.

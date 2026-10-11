@@ -30,18 +30,34 @@ final class Util {
 
 	/** Lowercase hex SHA-1 of a file — the checksum launchers compare against a library's declared {@code sha1}. */
 	static String sha1(Path p) throws IOException {
+		return digest(p, "SHA-1");
+	}
+
+	/**
+	 * Lowercase hex SHA-256 of a file.
+	 *
+	 * <p>Separate from {@link #sha1} because the two are not interchangeable: 26.2's own libraries are published
+	 * with an {@code sha1}, while the console pins {@code dev.py} stages are recorded as SHA-256. Verifying one
+	 * against the other fails on every file, and the failure reads as "the download is corrupt" rather than as
+	 * "the wrong algorithm was used".
+	 */
+	static String sha256(Path p) throws IOException {
+		return digest(p, "SHA-256");
+	}
+
+	private static String digest(Path p, String algorithm) throws IOException {
 		try {
-			MessageDigest md = MessageDigest.getInstance("SHA-1");
+			MessageDigest md = MessageDigest.getInstance(algorithm);
 			try (InputStream in = Files.newInputStream(p)) {
 				byte[] buf = new byte[65536];
 				int n;
 				while ((n = in.read(buf)) != -1) md.update(buf, 0, n);
 			}
-			StringBuilder sb = new StringBuilder(40);
+			StringBuilder sb = new StringBuilder(64);
 			for (byte b : md.digest()) sb.append(String.format("%02x", b));
 			return sb.toString();
 		} catch (NoSuchAlgorithmException e) {
-			throw new IOException("SHA-1 unavailable", e);
+			throw new IOException(algorithm + " unavailable", e);
 		}
 	}
 

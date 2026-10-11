@@ -110,6 +110,30 @@ public final class InstallerFacade {
 		return staged;
 	}
 
+	/**
+	 * Downloads Minecraft's own libraries, which the merge resolves external types through.
+	 *
+	 * <p>Exposed because a machine with no Minecraft install has none of them, and the merge does not say so: it
+	 * fails with "Incompatible initializer dependency on …ChunkGenerator#featuresPerStep", which names neither
+	 * libraries nor the platform. A launcher that builds the game itself has to bring these too.
+	 *
+	 * @return the libraries' paths, in the order the version JSON lists them
+	 */
+	public static java.util.List<Path> downloadMinecraftLibraries(Path mcDir, Consumer<String> log)
+			throws IOException {
+		// The version JSON is the manifest this reads, and on a machine that has never run Minecraft it is not
+		// there yet. Fetching it here rather than trusting a caller's ordering is what makes the launcher's
+		// sequence (libraries, then the build that needs them) correct on an empty directory; the downloader is
+		// the same one DevPrepare uses and writes both the JSON and the client jar.
+		Path version = mcDir.resolve("versions").resolve(Pins.MINECRAFT);
+		if (!Files.isRegularFile(version.resolve(Pins.MINECRAFT + ".json"))) {
+			new MojangDownloader(log).downloadClient(Pins.MINECRAFT, version);
+		}
+		java.util.List<Path> jars = new java.util.ArrayList<>(MinecraftLibraries.download(mcDir, Pins.MINECRAFT, log));
+		jars.addAll(MinecraftLibraries.consolePins(mcDir, log));
+		return jars;
+	}
+
 	private static Path stage(Path mcDir, Path stageDir, Path source, String relative) throws IOException {
 		Path target = stageDir.resolve(relative);
 		Files.createDirectories(target.getParent());

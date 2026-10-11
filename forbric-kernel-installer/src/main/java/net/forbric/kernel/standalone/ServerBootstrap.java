@@ -3,8 +3,6 @@ package net.forbric.kernel.standalone;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -106,6 +104,13 @@ public final class ServerBootstrap {
 		// missing JDK in the first second rather than after a merge.
 		InstallerFacade.Jvm jvm = InstallerFacade.locateJvm(mcDir, options.jdk, line -> System.out.println("[jdk] " + line));
 
+		// ---- Minecraft's own libraries ----
+		// BEFORE the artifacts, and this ordering is load-bearing: the merge resolves external types through
+		// them. Handed an empty libraries/ it fails on ChunkGenerator#featuresPerStep with "Incompatible
+		// initializer dependency" — a class it can read perfectly well — which names neither libraries nor the
+		// platform. A machine with no Minecraft install used to be unable to build a server at all.
+		List<Path> minecraftLibraries = mcLibraries(mcDir, proxy);
+
 		// ---- the game itself ----
 		Path stage = cache.resolve("staged/run");
 		boolean staged = isStaged(stage);
@@ -131,9 +136,6 @@ public final class ServerBootstrap {
 		for (ApiPin pin : API_PINS) apiJars.add(fetch(pin, libs));
 
 		Path bootJar = unpackBootJar(cache.resolve("kernel"));
-		List<Path> minecraftLibraries = minecraftLibraries(mcDir, options.mcDirExplicit)
-				? mcLibraries(mcDir)
-				: List.of();
 
 		// A metadata-only jar beside the merged base: system-classloader consumers (log4j config, the Fabric
 		// loader's version probe) read version.json, but the game's own bytecode must never be on the parent
@@ -194,7 +196,11 @@ public final class ServerBootstrap {
 		System.out.println("[forbric] starting the server" + (options.gameArguments.isEmpty() ? "" : " ("
 				+ String.join(" ", options.gameArguments) + ")"));
 		System.out.println();
-		Process child = new ProcessBuilder(command).inheritIO().start();
+		ProcessBuilder builder = new ProcessBuilder(command).inheritIO();
+		// The child downloads the API pins' siblings and whatever a mod fetches at runtime; it inherits neither
+		// this JVM's properties nor, on some networks, a working route without them.
+		proxy.applyTo(builder);
+		Process child = builder.start();
 		int code = child.waitFor();
 		if (code != 0) System.exit(code);
 	}
@@ -254,19 +260,22 @@ public final class ServerBootstrap {
 			  --game-dir <dir>   where the world, mods, plugins and caches live (default: .)
 			  --mc-dir <dir>     the Minecraft directory holding libraries/ and versions/ (default: <game-dir>)
 			  --jdk <path>       a Java 25+ launcher or JDK home to build and run with (default: auto-detected)
+			  --proxy <url>      an http(s) proxy for the downloads, e.g. http://127.0.0.1:7890
+			                     (default: http_proxy / https_proxy from the environment)
 			  --help             this text
 
 			Everything after -- is passed to the dedicated server unchanged (e.g. -- --port 25566 --nogui).
 			""";
 
 	/** The parsed command line. A record so the launch path cannot read a field {@link #parse} did not set. */
-	private record Options(Path gameDir, Path mcDir, boolean mcDirExplicit, Path jdk, boolean help,
+	private record Options(Path gameDir, Path mcDir, Path jdk, String proxy, boolean help,
 			List<String> gameArguments) {
 
 		static Options parse(String[] args) {
 			Path gameDir = Path.of(System.getProperty("user.dir", "."));
 			Path mcDir = null;
 			Path jdk = null;
+			String proxy = null;
 			boolean help = false;
 			List<String> game = new ArrayList<>();
 			boolean afterSeparator = false;
@@ -283,6 +292,7 @@ public final class ServerBootstrap {
 					case "--game-dir" -> gameDir = Path.of(requireValue(args, ++i, "--game-dir"));
 					case "--mc-dir" -> mcDir = Path.of(requireValue(args, ++i, "--mc-dir"));
 					case "--jdk" -> jdk = Path.of(requireValue(args, ++i, "--jdk"));
+					case "--proxy" -> proxy = requireValue(args, ++i, "--proxy");
 					default -> {
 						if (args[i].startsWith("--") && looksLikeServerFlag(args[i])) {
 							game.add(args[i]);
@@ -294,7 +304,7 @@ public final class ServerBootstrap {
 					}
 				}
 			}
-			return new Options(gameDir, mcDir != null ? mcDir : gameDir, mcDir != null, jdk, help, game);
+			return new Options(gameDir, mcDir != null ? mcDir : gameDir, jdk, proxy, help, game);
 		}
 
 		/** Flags the dedicated server understands, which a launcher must forward rather than reject. */
@@ -312,6 +322,115 @@ public final class ServerBootstrap {
 		}
 	}
 
+	/**
+	 * A proxy for every download this launcher makes, and for the ones its children make.
+	 *
+	 * <p>{@link net.forbric.installer.kernel.Http} builds its client from the JVM's default {@code ProxySelector},
+	 * which reads the {@code http(s).proxyHost/Port} properties — not the {@code http_proxy}/{@code https_proxy}
+	 * variables a shell exports. So a launcher started as {@code java -jar} has no proxy unless the user knew to
+	 * pass {@code -D} (and put it before {@code -jar}, which is a terminator). Reading the variables here is what
+	 * makes "one file, one command" true on a network that needs one.
+	 *
+	 * <p>{@link #applyToEnvironment} is not redundant with {@link #applyToSystemProperties}: a build tool the
+	 * installer forks reads neither, but several of them read the environment, and Java children inherit both.
+	 */
+	record Proxy(String host, int port, String source) {
+
+		private static final String[] HTTPS_VARIABLES = {"https_proxy", "HTTPS_PROXY"};
+		private static final String[] HTTP_VARIABLES = {"http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"};
+
+		/** The explicit option first, then the environment. Never a proxy at all when neither names one. */
+		static Proxy fromEnvironment(String explicit) {
+			String value = explicit;
+			String source = "--proxy";
+			if (value == null) {
+				// https first: it is the one the failing downloads need, and a machine may set only that.
+				for (String name : HTTPS_VARIABLES) {
+					if (System.getenv(name) != null && !System.getenv(name).isBlank()) {
+						value = System.getenv(name);
+						source = name;
+						break;
+					}
+				}
+			}
+			if (value == null) {
+				for (String name : HTTP_VARIABLES) {
+					if (System.getenv(name) != null && !System.getenv(name).isBlank()) {
+						value = System.getenv(name);
+						source = name;
+						break;
+					}
+				}
+			}
+			if (value == null) return new Proxy(null, 0, "none");
+			return parse(value, source);
+		}
+
+		/**
+		 * Accepts the shapes a shell actually holds: {@code http://host:port}, {@code host:port},
+		 * {@code //host:port} (what a browser's copy-paste produces), and the proxy variables no scheme.
+		 */
+		private static Proxy parse(String raw, String source) {
+			String value = raw.trim();
+			int scheme = value.indexOf("://");
+			if (scheme >= 0) value = value.substring(scheme + 3);
+			if (value.startsWith("//")) value = value.substring(2);
+			// Credentials are not supported and, more importantly, must not be silently dropped: a proxy that
+			// needs them would fail at every request with a confusing 407 rather than at startup.
+			if (value.contains("@")) value = value.substring(value.lastIndexOf('@') + 1);
+			int colon = value.lastIndexOf(':');
+			if (colon < 0) throw new IllegalArgumentException(source + " names no port: " + raw
+					+ " (expected e.g. http://127.0.0.1:7890)");
+			String host = value.substring(0, colon);
+			String port = value.substring(colon + 1);
+			int slash = port.indexOf('/');
+			if (slash >= 0) port = port.substring(0, slash);
+			try {
+				return new Proxy(host, Integer.parseInt(port), source);
+			} catch (NumberFormatException notAPort) {
+				throw new IllegalArgumentException(source + " has a non-numeric port: " + raw, notAPort);
+			}
+		}
+
+		boolean enabled() {
+			return host != null;
+		}
+
+		/** Both schemes: HttpClient does not carry an http proxy over to https requests. */
+		void applyToSystemProperties() {
+			if (!enabled()) return;
+			System.setProperty("http.proxyHost", host);
+			System.setProperty("http.proxyPort", String.valueOf(port));
+			System.setProperty("https.proxyHost", host);
+			System.setProperty("https.proxyPort", String.valueOf(port));
+		}
+
+		/**
+		 * The proxy variables, into the child processes' environment.
+		 *
+		 * <p>System properties cover THIS process. They reach a child not at all: the tools the build forks are
+		 * handed their own command line and inherit only the environment, which is why neoform's runtime kept
+		 * going direct to maven.neoforged.net while the parent used the proxy happily. Setting the variables here
+		 * is what carries them across.
+		 *
+		 * <p>Set only where absent, so a value the user exported still wins.
+		 */
+		void applyTo(ProcessBuilder builder) {
+			if (!enabled()) return;
+			builder.environment().putIfAbsent("http_proxy", "http://" + host + ":" + port);
+			builder.environment().putIfAbsent("https_proxy", "http://" + host + ":" + port);
+			builder.environment().putIfAbsent("HTTP_PROXY", "http://" + host + ":" + port);
+			builder.environment().putIfAbsent("HTTPS_PROXY", "http://" + host + ":" + port);
+		}
+
+		/** The same pair as {@code -D}, for a child that reads properties but not the environment. */
+		List<String> jvmArguments() {
+			if (!enabled()) return List.of();
+			return List.of("-Dhttp.proxyHost=" + host, "-Dhttp.proxyPort=" + port,
+					"-Dhttps.proxyHost=" + host, "-Dhttps.proxyPort=" + port);
+		}
+	}
+
 	/** True when every file a launch names is already staged and non-trivial. */
 	private static boolean isStaged(Path stage) {
 		for (String relative : new String[] {
@@ -324,38 +443,25 @@ public final class ServerBootstrap {
 		return true;
 	}
 
-	private static boolean minecraftLibraries(Path mcDir, boolean explicit) {
-		return Files.isDirectory(mcDir.resolve("libraries"));
-	}
-
-	/** Minecraft's own libraries, in the order its version JSON lists them. */
-	private static List<Path> mcLibraries(Path mcDir) throws IOException {
-		// Reuse the version JSON the game itself ships: its `libraries` list is the authoritative classpath, and
-		// re-deriving it from Maven coordinates would drift from what the launcher would have used.
-		Path json = mcDir.resolve("versions/26.2/26.2.json");
-		if (!Files.isRegularFile(json)) throw new IOException("no " + json + " — run the Minecraft launcher for 26.2 once, "
-				+ "or pass --mc-dir pointing at a directory that has it");
-		List<Path> jars = new ArrayList<>();
-		// A JSON reader would be a dependency; this launcher carries none. The paths are `downloads.artifact.path`
-		// strings, and every one of them ends in `.jar`. A regex over the text is enough and cannot silently
-		// produce a wrong path the way a hand-rolled parser could.
-		java.util.regex.Matcher matcher = java.util.regex.Pattern
-				.compile("\"path\"\\s*:\\s*\"([^\"]+\\.jar)\"").matcher(Files.readString(json));
-		while (matcher.find()) {
-			Path jar = mcDir.resolve("libraries").resolve(matcher.group(1));
-			if (Files.isRegularFile(jar)) jars.add(jar);
+	/**
+	 * Minecraft's own libraries, downloaded if this machine has never had them.
+	 *
+	 * <p>This is what a fresh machine was missing. The launcher used to hand the merge a Minecraft directory with
+	 * an empty {@code libraries/}, and the merge resolves external types through it — so it failed on a class it
+	 * could read perfectly well, with a message about an initializer dependency that names nothing about the real
+	 * cause. {@code dev.py} has always done this in {@code stage_minecraft}; the standalone launcher now does too.
+	 */
+	private static List<Path> mcLibraries(Path mcDir, Proxy proxy) throws Exception {
+		try {
+			return InstallerFacade.downloadMinecraftLibraries(mcDir, System.out::println);
+		} catch (Exception failure) {
+			throw new IOException("could not prepare Minecraft's libraries under " + mcDir + "/libraries — the "
+					+ "merge needs them to resolve external types and will otherwise fail on an unrelated class. "
+					+ (proxy.enabled()
+							? "The proxy " + proxy.host() + ":" + proxy.port() + " was used."
+							: "No proxy was configured; pass --proxy or export https_proxy if this network needs one."),
+					failure);
 		}
-		// The dedicated console uses jline, which 26.2's own metadata omits.
-		Path jline = mcDir.resolve("libraries/org/jline");
-		if (Files.isDirectory(jline)) {
-			try (var walk = Files.walk(jline)) {
-				walk.filter(p -> p.getFileName().toString().matches("jline-.*-3\\.25\\.1\\.jar"))
-						.forEach(jars::add);
-			}
-		}
-		if (jars.isEmpty()) throw new IOException("no Minecraft libraries found under " + mcDir
-				+ "/libraries — run the Minecraft launcher for 26.2 once");
-		return jars;
 	}
 
 	/**
@@ -385,20 +491,38 @@ public final class ServerBootstrap {
 	}
 
 	/** The boot jar, unpacked from this jar's own resources on first use. */
+	/**
+	 * The boot jar, unpacked from this jar's own resources.
+	 *
+	 * <p>Unpacked to a name derived from its CONTENT, not to a fixed {@code forbric-kernel.jar}. A fixed name is
+	 * a cache that can never be invalidated: the file exists, so it is used, whatever the launcher now carries.
+	 * Rebuilding the launcher with a new kernel and running it in an existing game directory then executes the
+	 * OLD kernel, silently — which is exactly how a fix for "plugins/ is never created" shipped and appeared not
+	 * to work. The content name makes replacement automatic and keeps the old copy harmlessly beside it.
+	 */
 	private static Path unpackBootJar(Path dir) throws IOException {
 		Files.createDirectories(dir);
-		Path target = dir.resolve("forbric-kernel.jar");
-		if (Files.isRegularFile(target)) return target;
+		byte[] bytes;
 		try (InputStream in = ServerBootstrap.class.getResourceAsStream("/" + NESTED + "forbric-kernel.jar")) {
 			if (in == null) throw new IOException("this launcher carries no kernel at " + NESTED
 					+ "forbric-kernel.jar — it was built without the standaloneJar task");
-			Path temporary = target.resolveSibling(target.getFileName() + ".part");
-			try (OutputStream out = Files.newOutputStream(temporary)) {
-				in.transferTo(out);
-			}
-			Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+			bytes = in.readAllBytes();
 		}
+		Path target = dir.resolve("forbric-kernel-" + digestOf(bytes).substring(0, 16) + ".jar");
+		if (Files.isRegularFile(target) && Files.size(target) == bytes.length) return target;
+		Path temporary = target.resolveSibling(target.getFileName() + ".part");
+		Files.write(temporary, bytes);
+		Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
 		return target;
+	}
+
+	/** SHA-256 of bytes, for naming an unpacked artifact after what it is. */
+	private static String digestOf(byte[] bytes) {
+		try {
+			return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+		} catch (java.security.NoSuchAlgorithmException impossible) {
+			throw new IllegalStateException("every JVM has SHA-256", impossible);
+		}
 	}
 
 	/** Downloads one pinned artifact if absent, and refuses to use it if the digest is not the pinned one. */

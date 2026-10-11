@@ -57,8 +57,8 @@ merged base（合并基底）里嵌着 Mojang、MinecraftForge、NeoForge 的代
 --game-dir <dir>   世界 / mods / plugins / 缓存放哪（默认：当前目录）
 --mc-dir <dir>     Minecraft 目录（含 libraries/ 和 versions/）（默认：= --game-dir）
 --jdk <path>       用哪个 JDK 25+ 来构建和运行（默认：自动找）
+--proxy <url>      下载用的 http(s) 代理（默认：读环境变量）
 --help             帮助
-
 ```
 
 `--` 之后的所有参数原样传给服务端。
@@ -148,13 +148,7 @@ java -jar forbric-server.jar && echo "正常退出" || echo "异常退出 ($?)"
 ## 常见问题
 
 **首次运行合并失败，报 `Incompatible initializer dependency on ...ChunkGenerator#featuresPerStep`**
-→ 这一版还没下载 Minecraft 的 library 就去做合并，而合并要用它们解析外部类型。把 `--mc-dir` 指向一个**装好 Minecraft 26.2** 的目录（有 `libraries/`）即可：
-
-```bash
-java -jar forbric-server.jar --mc-dir ~/.minecraft
-```
-
-`--game-dir` 仍然放你的世界和 mods，两者可以不同。已经跑过 `dev.py prepare` 的目录也满足条件。**这是已知缺陷，下一版会修掉**（让 `ServerBootstrap` 自己下载 library）。
+→ 现在不应该再出现了：启动器会先下 Minecraft 的 library 再合并，而合并要用它们解析外部类型（空的 `libraries/` 就是当时的原因，而报错信息两者都没提）。如果还是看到它，说明下载那一步没跑完——`[minecraft] 68 libraries ready` 这行是它跑完了的证据，且它必须出现在 `== merging ==` **之前**。代理只起了一半作用是最常见的原因。
 
 **`no Java 25 or newer was found`**
 → 装个 JDK 25，或者 `--jdk /path/to/jdk25`。也可以先启动一次 Minecraft 26.2，让启动器把 runtime 下下来。
@@ -163,22 +157,25 @@ java -jar forbric-server.jar --mc-dir ~/.minecraft
 → 正常。合并 88 MB 的字节码要一两分钟，输出里有 `[merge]` 前缀的进度。
 
 **下载卡住 / `maven.neoforged.net` 连不上**
-→ 需要代理。用 `JAVA_TOOL_OPTIONS`，**每一个** JVM 都会读它，包括构建期间 fork 出来的工具进程：
+→ 需要代理，启动器会自己读：
 
 ```bash
-export JAVA_TOOL_OPTIONS="-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890 \
-                          -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890"
+export https_proxy=http://127.0.0.1:7890
 java -jar forbric-server.jar
 ```
 
-**`-D` 写在 `-jar` 后面没用** —— `-jar` 是终结符，它后面的一切都被当成程序参数：
+`https_proxy` / `http_proxy` / `all_proxy`（及其大写形式）都会读，也可以用 `--proxy <url>` 显式指定。启动器会把它变成自己的系统属性、变成每个子进程的环境变量，并打印出来：
 
-```bash
-java -jar -Dhttps.proxyHost=... forbric-server.jar   # ❌ 代理不生效
-java -Dhttps.proxyHost=... -jar forbric-server.jar   # ✅
+```
+[forbric] using the proxy at 127.0.0.1:7890 (from https_proxy)
 ```
 
-而且父进程的 `-D` **不会**传给构建时 fork 的子进程，所以 `JAVA_TOOL_OPTIONS` 比 `-D` 更可靠。
+**这一点比看起来重要。** 构建过程会 fork 出好几个工具进程；它们不继承父进程的属性，所以只用 `-D` 传的代理只能到父进程，到不了它们。而且 `-D` 写在 `-jar` 后面完全无效，因为 `-jar` 是终结符：
+
+```bash
+java -jar -Dhttps.proxyHost=... forbric-server.jar   # ❌ 被当成程序参数
+java -Dhttps.proxyHost=... -jar forbric-server.jar   # ✅ 有效，但到不了子进程
+```
 
 **构建失败，报 `merge-tools.jar` 找不到**
 → 这个 jar 打漏了，是构建问题。重新 `./gradlew standaloneJar`。
