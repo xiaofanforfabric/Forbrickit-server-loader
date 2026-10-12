@@ -26,8 +26,12 @@
 | 物品创建（`ItemStack.of`、`new ItemStack(...)`） | ✅ 走 `ItemType` 注册表 |
 | 物品序列化（`serializeAsBytes`、`serializeItemsAsBytes`、`deserialize...`） | ✅ Paper 的字节格式 |
 | `ItemStack.empty()` / `createEmptyStack()` | ✅ |
-| 调度器（`BukkitRunnable`、`runTask`、延迟、重复） | ✅ |
-| 事件注册 + 派发（`registerEvents`、`callEvent`） | ✅ 含优先级排序 |
+| 调度器（`BukkitRunnable`、`runTask`、延迟、重复） | ✅ 含 Folia 风格的三套 `RegionScheduler`/`AsyncScheduler`/`GlobalScheduler` |
+| 事件注册（`registerEvents`、`@EventHandler` 扫描、优先级排序） | ✅ 注册与 `callEvent` 派发都可用 |
+| `World` 玩法面：`playSound`(8 个重载)、`spawnParticle`(13 个)、`createExplosion`(3 个)、`strikeLightning`、`getNearbyEntities` | ✅ 实测 3 轮共 379 次爆炸，可打到基岩 |
+| `LivingEntity` 基础（血量、伤害、`canSee`） | ✅ 注意：此前 `ForbricEntity` **没有**实现 `LivingEntity`，导致 `instanceof LivingEntity` 恒为 false，爆炸静默漏掉所有生物 |
+| `ItemMeta` / `Damageable` / PDC（`PersistentDataContainer`） | ✅ 含 `ForbricDamageableMeta`、`ForbricPersistentDataContainer`（底层 NBT `CompoundTag`） |
+| `RegistryAccess`（`Registry.SOUNDS`、`ITEM` 等） | ✅ 未支持的种类回落到**空注册表**而非抛异常（`Registry.<clinit>` 会被污染） |
 | `Bukkit.setServer`、`ServerBuildInfo`、`RegistryAccess` 等 ServiceLoader 服务 | ✅ |
 
 ### 核心数字
@@ -36,12 +40,13 @@
 
 | 绑定的接口 | 已实现 | 总数 | 未实现 |
 | --- | --- | --- | --- |
-| `ForbricPlayer`（`org.bukkit.entity.Player`） | 24 | 632 | 608 |
-| `ForbricWorld`（`org.bukkit.World`） | 17 | 211 | 194 |
+| `ForbricPlayer`（`org.bukkit.entity.Player`） | 28 | 632 | 604 |
+| `ForbricWorld`（`org.bukkit.World`） | 33 | 211 | 178 |
 | `ServerImpl`（`org.bukkit.Server`） | 14 | 202 | 188 |
-| `ForbricEntity`（`org.bukkit.entity.Entity`） | 11 | 159 | 148 |
+| `ForbricEntity`（`org.bukkit.entity.Entity`） | 10 | 159 | 149 |
+| `ForbricLivingEntity`（`org.bukkit.entity.LivingEntity`） | 17 | 173 | 156 |
 | `ForbricBlock`（`org.bukkit.block.Block`） | 12 | 73 | 61 |
-| **小计** | **78** | **1277** | **1199** |
+| **小计** | **114** | **1450** | **1336** |
 
 手写的桥接类（文件里的拒绝点数量）：
 
@@ -114,8 +119,99 @@
 | B3 | 插件桥关闭时不干净 | `BridgeBootstrap` | 退出时报 `java.lang.reflect.InvocationTargetException`。属于表面问题 —— 服务端仍能正常停止。未深入调查。 |
 | B4 | 带计时的 `addAttachment(..., ticks)` 被拒绝 | `ForbricPlayer` | 需要调度器；不带计时的重载能用。 |
 | B5 | `addEnchantment` / `getEnchantments` 被拒绝 | `ForbricItemStack` | 属于 P0-2（`ItemMeta`）的下游。 |
+| **B6** | **`PlayerInteractEvent` 走的是 NeoForge 总线，不是打源代码** | `BukkitInteractBridge` | **见 §3.1 —— 本次会话的遗留主线。** |
+| **B7** | **`getUseItemInHand()` / `getUseInteractedBlock()` 的 `ALLOW`/`DENY` 无法回写** | `BukkitInteractBridge` | NeoForge 交互事件只有 cancel + `InteractionResult`，形状对不上 Bukkit 的三态 `Result`。读得到、写不回去。打源代码方案能一并解决。 |
+| **B8** | **`LEFT_CLICK_AIR` 不派发** | `BukkitInteractBridge` | 游戏服务端没有"对空气挥空手"的事件（纯客户端动画，`ServerGamePacketListenerImpl` 丢弃）。打源代码可在 `ServerGamePacketListenerImpl.handlePlayerAction` 里补上，与真 Paper 行为一致。 |
+
+### 3.1 遗留主线：Bukkit 事件应"打源代码"，不该挂 NeoForge 总线
+
+**这是本次会话唯一没做完的事，也是下面那一长串修复的共同背景。**
+
+#### 已修好的（本次会话已验证有效）
+
+按发现顺序，每一处修好都露出下一处：
+
+| # | 症状 | 根因 | 修法 |
+| --- | --- | --- | --- |
+| 1 | `paperPluginManager` 空指针 | `SimplePluginManager` 是个 shadow，29 个转发方法 | `simple.paperPluginManager = manager` + `ForbricPluginManager` 自己实现转发面 |
+| 2 | 命令没注册 | `ServerImpl.getPluginCommand` 抛异常 | 实现为读 `commandMap` 并按 `instanceof PluginCommand` 过滤 |
+| 3 | `onEnable` 里 `getCommand()` 返回 null | 命令注册晚于 `onEnable` | 新增 `ForbricDeclaredCommands.installCommandMap`，在 `setEnabled(true)` **之前**注册 |
+| 4 | `/osc` 补全为空 | `node()` 没挂 `suggests` | 补 `.suggests((ctx, p) -> suggest(...))` |
+| 5 | `suggest()` 里 `args.length` 差一 | 贪婪参数已含当前半截词 | 仅当 `typed.isEmpty() \|\| typed.endsWith(" ")` 才追加 `""` |
+| 6 | TAB 键死掉 | `Command.tabComplete0` 的玩家名回退里调 `Player.canSee()` 抛异常 | 用 `Entity.broadcastToPlayer` 实现 `canSee(Player)` / `canSee(Entity)` |
+| 7 | 别名不可执行（"declared by a plugin that is no longer loaded"） | `PluginCommand.setAliases` 从没被调用 | `newPluginCommand` 里补 `setAliases(aliasesOf(properties))` |
+| 8 | `Server.suggestPlayerNamesWhenNullTabCompletions()` 抛异常 | 未实现 | 实现为返回 `true` |
+| 9 | `org.bukkit.Sound` 未实现 | 注册表缺失 | 用 `ForbricEmptyRegistry` ＋ 真正的 `ForbricSoundRegistry` |
+| 10 | `getPlayerExact()` 等查玩家 | 未实现 | 实现精确/前缀/UUID 三种查找 |
+| 11 | `Registry.<clinit>` 被毒化 | `getRegistry(Class)` 抛异常 | 改为返回**空注册表**（满足 `Objects.requireNonNull`） |
+| 12 | `Player.getEyeLocation()` | 未实现 | 用 `player.getEyePosition()` |
+| 13 | `World.rayTraceBlocks()` | 未实现 | 5 参形式是 `default`，汇聚到 6 参 `Position` 形式 |
+| 14 | `isOwnedByCurrentRegion()` + 三套调度器 | 未实现 | 单线程服务器：每个区域都属于游戏线程，`ensureRegion` 走 `task.run()` 内联路径 |
+| 15 | `Sound.<clinit>` 抛 `NoSuchElementException`（1968 个常量） | `Registry.SOUNDS.getOrThrow` 找不到 | 实现基于游戏 `SOUND_EVENT` 注册表的 `ForbricSoundRegistry` |
+| 16 | `World.playSound`(8) / `spawnParticle`(13) | 未实现 | 实现 |
+| 17 | `World.createExplosion`(3) | 未实现 | 实现 |
+| 18 | `World.strikeLightning` / `strikeLightningEffect` | 未实现 | 新增 `ForbricLightningStrike` |
+| 19 | `World.getNearbyEntities`(2) | 未实现 | 实现 |
+| 20 | **爆炸静默漏掉所有生物** | `ForbricEntity` 只实现 `Entity`，`instanceof LivingEntity` 恒 false | 新增 `ForbricLivingEntity`（17 个方法） |
+| 21 | `ItemStack.getItemMeta()` 抛异常 | 未实现 | 新增 `ForbricItemMeta` + `ForbricDamageableMeta` + `ForbricPersistentDataContainer` + `ForbricComponentBridge` |
+| 22 | `cannot read an ItemStack this bridge did not create` | `ForbricItemCodec.gameOf` 反射读不到 `craftDelegate` | 递归 + 具名拒绝 |
+| 23 | **`@EventHandler` 从不被调用** | `callEvent` 有实现但**从没有任何地方调用它** | 见下 —— **这一处用了错的方向** |
+
+#### 本次会话最后一段：事件桥（方向错了，待重做）
+
+问题：`ForbricPluginManager.callEvent()` 一直存在，但**整条链路里没有任何东西把游戏事件接进来**。
+插件能加载、命令能执行，但 `@EventHandler` 永远不触发 —— 完全静默。
+
+**我当时的做法（需要重做）**：新增 `BukkitInteractBridge.java`，订阅 **NeoForge** 的三个交互事件再转成 Bukkit 事件。
+
+```
+org/cn/xiaofan/bukkit/BukkitInteractBridge.java   ← 唯一一处 NeoForge 依赖
+  ├─ net.neoforged.bus.api.IEventBus               （订阅总线）
+  ├─ net.neoforged.bus.api.EventPriority           （同）
+  ├─ net.neoforged.neoforge.event.entity.player.PlayerInteractEvent  （事件类型）
+  └─ net.neoforged.bus.api.ICancellableEvent       （setCanceled）
+```
+
+接线：`KernelGameServerLifecycle.startBukkitBridgeIfInstalled(server, neoBus)` 在 `ServerStartedEvent`
+里启动 bridge 后，反射调 `BukkitRuntime.installGameEvents(Object neoBus)`。
+
+**为什么这是错的方向**：这就是**信雅互联（Sinytra Connector）那一类转发** —— 靠 NeoForge 总线当中转站。
+用户要的是**打源代码**：注入 `ServerPlayerGameMode` / `ServerGamePacketListenerImpl` 的原路径，
+让 Bukkit 事件从游戏本来就有的调用点**原生发出来**，而不是挂个中间人从 NeoForge 事件里捞。
+
+**为什么必须重做（用户的真实顾虑）**：上游（NeoForge）一旦宣布某版本停止维护或移除，
+所有"挂 NeoForge 总线"的东西会一起塌。游戏本体不可能被放弃，但**加载器**可以。
+打源代码只依赖 `net.minecraft.*`，这才是稳的。
+
+**重做清单（你来做）**：
+
+1. 删 `forbric-kernel/src/runtime/java/org/cn/xiaofan/bukkit/BukkitInteractBridge.java`
+2. 撤销 `KernelGameServerLifecycle` 里本次加的两段：
+   - `startBukkitBridgeIfInstalled` 的第二个参数 `Object neoBus`
+   - 方法 `installBukkitGameEvents(Object handle, Object neoBus)` 及其调用
+   - 即 `installStarted` 里的调用改回 `startBukkitBridgeIfInstalled(server);`
+3. 撤销 `BukkitRuntime.installGameEvents(Object)` 与 `BridgeBootstrap.server()`（若打源代码用不到）
+4. 改为 mixin 注入，建议注入点：
+   - `ServerPlayerGameMode.useItemOn(ServerPlayer, Level, ItemStack, InteractionHand, BlockHitResult)`
+     → `RIGHT_CLICK_BLOCK`
+   - `ServerPlayerGameMode.useItem(ServerPlayer, Level, ItemStack, InteractionHand)`
+     → `RIGHT_CLICK_AIR`（对空气/物品）
+   - `ServerGamePacketListenerImpl.handlePlayerAction`（`START_DESTROY_BLOCK` / 单独 `SWING_ARM` 分支）
+     → `LEFT_CLICK_BLOCK` / `LEFT_CLICK_AIR`（一并补上 B8）
+5. 目标：**Bukkit 桥对 `net.neoforged.*` 依赖归零。** 可用的自检命令：
+
+   ```sh
+   grep -rn 'net\.neoforged' forbric-kernel/src/runtime/java/org/cn/xiaofan/bukkit/
+   # 期望：无输出
+   ```
+
+   （本次会话结束时该命令有 4 条输出，全在 `BukkitInteractBridge.java`。）
+
+> **注意**：撤掉这段后，插件的事件派发会**重新变成静默失效**。
+> 所以重做前，插件能跑命令但 `@EventHandler` 不触发是**预期行为**，不是新 bug。
 
 ---
+
 
 ## 4. 本桥接层遵循的设计规则
 

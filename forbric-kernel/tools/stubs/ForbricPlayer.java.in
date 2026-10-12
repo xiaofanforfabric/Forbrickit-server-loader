@@ -157,6 +157,28 @@ final class {{class}} implements {{interface}} {
                                 player.getYRot(), player.getXRot());
         }
 
+        /**
+         * Where this player is looking FROM — the eye, not the feet.
+         *
+         * <p>Separate from {@link #getLocation()} because the two differ by the eye height (about
+         * 1.62 blocks standing), and a ray cast that started at the feet would hit the ground the
+         * player is standing on instead of whatever is ahead. The game keeps the eye position
+         * itself, so it is read rather than derived: an eye height the bridge computed would be
+         * wrong for a sneaking, swimming or riding player, and the game's answer already accounts
+         * for the pose.
+         *
+         * <p>The direction is the same yaw and pitch {@link #getLocation()} reports, which is what a
+         * plugin expects: eye position and facing belong to one observation, and taking them from
+         * two calls would let a player turn between them.
+         */
+        @Override
+        public org.bukkit.Location getEyeLocation() {
+                net.minecraft.world.phys.Vec3 eye = player.getEyePosition();
+                return new org.bukkit.Location(ForbricWorld.of(player.level(), server),
+                                eye.x(), eye.y(), eye.z(),
+                                player.getYRot(), player.getXRot());
+        }
+
         /** The server this player is on. */
         @Override
         public ServerImpl getServer() {
@@ -391,6 +413,61 @@ final class {{class}} implements {{interface}} {
         @Override
         public boolean isOp() {
                 return server.isOperator(getUniqueId());
+        }
+
+        /**
+         * Whether this player's client can see another player.
+         *
+         * <p>Answered by the game's own per-entity visibility test, {@code Entity.broadcastToPlayer}, which
+         * is what decides whether a packet about an entity is sent to a connection at all. Reading the
+         * game's answer keeps this correct for hiding done by a mod or another plugin, which a hidden-set
+         * kept here would miss.
+         *
+         * <p><b>Not a cosmetic query.</b> {@code Command.tabComplete0} calls it while building the
+         * player-name fallback for a command whose own completer answered nothing. Throwing here failed the
+         * whole completion packet, so a client's TAB key went dead and the server logged a warning per
+         * keystroke — the symptom that made a plugin command un-completable.
+         */
+        @Override
+        public boolean canSee(org.bukkit.entity.Player other) {
+                return canSee((org.bukkit.entity.Entity) other);
+        }
+
+        /** The entity overload, which is the same visibility rule. */
+        @Override
+        public boolean canSee(org.bukkit.entity.Entity other) {
+                if (other == null) {
+                        return false;
+                }
+                // A player always sees themselves: the game skips the broadcast test for the connection's own
+                // entity, so asking it here would answer "no" for the one entity a player is certain to see.
+                if (other.getUniqueId().equals(getUniqueId())) {
+                        return true;
+                }
+                net.minecraft.world.entity.Entity target = gameEntity(other);
+                if (target == null) {
+                        // Not a wrapper this bridge built. Treating it as visible would be the wrong default:
+                        // a plugin asking about an entity it never obtained here is asking about something this
+                        // player's connection was never told about.
+                        return false;
+                }
+                return target.broadcastToPlayer(player);
+        }
+
+        /**
+         * The game entity behind a Bukkit one, for the visibility check.
+         *
+         * <p>Only the wrappers this bridge builds can answer. A null return is handled by the caller as
+         * "not visible", which is the honest answer for an entity this bridge does not own.
+         */
+        private net.minecraft.world.entity.Entity gameEntity(org.bukkit.entity.Entity other) {
+                if (other instanceof ForbricEntity bukkitEntity) {
+                        return bukkitEntity.entity();
+                }
+                if (other instanceof net.minecraft.server.level.ServerPlayer gamePlayer) {
+                        return gamePlayer;
+                }
+                return null;
         }
 
 {{methods}}}

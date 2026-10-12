@@ -96,6 +96,13 @@ final class PluginHandle {
 	void enable(com.mojang.brigadier.CommandDispatcher<net.minecraft.commands.CommandSourceStack> dispatcher,
 			ServerImpl server) {
 		plugin.onLoad();
+
+		// plugin.yml commands must exist before onEnable: JavaPlugin.getCommand() is deliberately called
+		// from onEnable by traditional Bukkit plugins, where the executor and tab completer are attached.
+		// Installing only after onEnable creates a perfectly visible Brigadier node whose PluginCommand has
+		// no executor, which looks like a command that accepts input and then does nothing.
+		ForbricDeclaredCommands.installCommandMap(description, plugin, server);
+
 		plugin.setEnabled(true);
 
 		ForbricLifecycleEventManager manager = ForbricApiBridge.lifecycleManagerOf(plugin);

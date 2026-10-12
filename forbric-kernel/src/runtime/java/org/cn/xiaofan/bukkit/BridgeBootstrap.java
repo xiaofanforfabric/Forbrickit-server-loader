@@ -221,4 +221,16 @@ public final class BridgeBootstrap {
 	public Logger logger() {
 		return logger;
 	}
+
+	/**
+	 * The server the bridge installed, so a caller that starts the game-event forwards can reach
+	 * the plugin manager and wrap players against the same server the plugins already see.
+	 *
+	 * <p>Package-visible rather than public: the only caller is {@link BukkitRuntime}, which is in
+	 * this package, and a public accessor would invite a plugin to reach behind Bukkit to its
+	 * implementation.
+	 */
+	ServerImpl server() {
+		return server;
+	}
 }

@@ -374,26 +374,125 @@ final class ForbricItemStack extends org.bukkit.inventory.ItemStack {
     }
 
     /**
-     * The item's components as a {@code ItemMeta}.
+     * The item's components as a {@code ItemMeta}, as a snapshot a plugin edits and writes back.
      *
-     * <p>Refuses. Paper's {@code ItemMeta} is a large interface whose implementations live in
-     * CraftBukkit, and this bridge has neither the implementation nor the component mapping that
-     * would make one. Returning a partially-filled meta would look like it worked and silently
-     * drop whatever the plugin then set on it.
+     * <p>The values are read from the game's item components — {@code custom_name}, {@code lore},
+     * {@code damage}, {@code max_damage} and {@code custom_data} — and copied into a wrapper. That
+     * snapshot is the API's own contract: a plugin edits the meta and calls {@link #setItemMeta} to
+     * apply it, and edits that are never written back are discarded.
+     *
+     * <p><b>The container is the exception, deliberately.</b> The persistent data container handed out
+     * here IS the tag inside the item's component, so a plugin that writes a tag and forgets to write
+     * the meta back still gets the tag stored. Bukkit's own implementations behave this way, and a
+     * plugin tagging its items is the single most common reason to call this method at all.
+     *
+     * <p><b>Which class comes back depends on the item.</b> An item the game gives a
+     * {@code max_damage} or {@code damage} — a tool, a weapon, armour — answers with
+     * {@link ForbricDamageableMeta}, so a plugin's {@code meta instanceof Damageable} guard finds it.
+     * Anything else answers with the plain meta, and that guard correctly fails: a block of stone
+     * cannot wear out, and pretending otherwise would make a plugin write a damage value the game
+     * then ignores.
      */
     @Override
     public org.bukkit.inventory.meta.ItemMeta getItemMeta() {
-        throw new UnsupportedOperationException(
-                        "[Forbric/Bukkit] ItemStack.getItemMeta() is not implemented by this bridge yet"
-                                        + " (needs the component-to-ItemMeta mapping)");
+        net.minecraft.world.item.ItemStack stack = toGame();
+        if (stack == net.minecraft.world.item.ItemStack.EMPTY || stack.isEmpty()) {
+            // An air item has no components to read and no meta a plugin could usefully edit. Bukkit
+            // answers null here on every server.
+            return null;
+        }
+        net.kyori.adventure.text.Component name = ForbricComponentBridge.toAdventure(
+                        stack.get(net.minecraft.core.component.DataComponents.CUSTOM_NAME));
+        net.minecraft.world.item.component.ItemLore loreComponent =
+                        stack.get(net.minecraft.core.component.DataComponents.LORE);
+        java.util.List<net.kyori.adventure.text.Component> lore = new java.util.ArrayList<>();
+        if (loreComponent != null) {
+            for (net.minecraft.network.chat.Component line : loreComponent.lines()) {
+                net.kyori.adventure.text.Component adventure = ForbricComponentBridge.toAdventure(line);
+                if (adventure != null) {
+                    lore.add(adventure);
+                }
+            }
+        }
+        // The container is taken from the item's own tag, not a copy: writes through it land in the
+        // component immediately, which is what a plugin tagging its item expects without a write-back.
+        net.minecraft.world.item.component.CustomData custom =
+                        stack.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        ForbricPersistentDataContainer container = new ForbricPersistentDataContainer(
+                        custom == null ? new net.minecraft.nbt.CompoundTag() : custom.copyTag());
+        // Written back at once so the container this wrapper holds and the one inside the item are the
+        // same tag object from here on.
+        stack.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA,
+                        net.minecraft.world.item.component.CustomData.of(container.tag()));
+
+        Integer maxDamage = stack.get(net.minecraft.core.component.DataComponents.MAX_DAMAGE);
+        Integer damage = stack.get(net.minecraft.core.component.DataComponents.DAMAGE);
+        if (maxDamage != null || damage != null) {
+            return new ForbricDamageableMeta(name, lore, container, 0, null,
+                            damage == null ? 0 : damage, damage != null, maxDamage);
+        }
+        return new ForbricItemMeta(name, lore, container, 0, null);
     }
 
-    /** Refuses for the same reason as {@link #getItemMeta()}. */
+    /**
+     * Writes a meta's values back into this item's components.
+     *
+     * <p>A null meta clears the name, the lore and the damage value while leaving the plugin data
+     * alone, which is what the API documents and what a plugin restoring an item's plain look relies
+     * on. The data is left because a container cannot be un-set by passing null — a plugin clears its
+     * own keys through the container itself.
+     *
+     * <p>Nothing here touches {@code max_damage}: a meta that overrode it would change how long the
+     * item lasts, which is a different kind of change from renaming it and not one this bridge makes
+     * implicitly.
+     */
     @Override
     public boolean setItemMeta(org.bukkit.inventory.meta.ItemMeta itemMeta) {
-        throw new UnsupportedOperationException(
-                        "[Forbric/Bukkit] ItemStack.setItemMeta() is not implemented by this bridge yet"
-                                        + " (needs the ItemMeta-to-component mapping)");
+        net.minecraft.world.item.ItemStack stack = toGame();
+        if (stack == net.minecraft.world.item.ItemStack.EMPTY || stack.isEmpty()) {
+            // Nothing to write to. Bukkit reports false rather than throwing, because a plugin may
+            // legitimately hold an air item and set a meta on it.
+            return false;
+        }
+        if (itemMeta == null) {
+            stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, null);
+            stack.set(net.minecraft.core.component.DataComponents.LORE, null);
+            stack.set(net.minecraft.core.component.DataComponents.DAMAGE, null);
+            return true;
+        }
+        // The snapshot accessors are on this bridge's own class. A meta from somewhere else cannot be
+        // read, and guessing at it would write a default name onto the item.
+        if (!(itemMeta instanceof ForbricItemMeta meta)) {
+            return false;
+        }
+        net.minecraft.network.chat.Component name = ForbricComponentBridge.toGame(meta.nameSnapshot());
+        stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, name);
+        java.util.List<net.kyori.adventure.text.Component> lines = meta.loreSnapshot();
+        if (lines.isEmpty()) {
+            stack.set(net.minecraft.core.component.DataComponents.LORE, null);
+        } else {
+            java.util.List<net.minecraft.network.chat.Component> gameLines = new java.util.ArrayList<>();
+            for (net.kyori.adventure.text.Component line : lines) {
+                net.minecraft.network.chat.Component gameLine = ForbricComponentBridge.toGame(line);
+                if (gameLine != null) {
+                    gameLines.add(gameLine);
+                }
+            }
+            stack.set(net.minecraft.core.component.DataComponents.LORE,
+                            new net.minecraft.world.item.component.ItemLore(gameLines));
+        }
+        // The container was shared, so its tag is already inside the item; re-setting it keeps a plugin
+        // that replaced the whole meta rather than editing the one it was given consistent.
+        stack.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA,
+                        net.minecraft.world.item.component.CustomData.of(meta.container().tag()));
+
+        if (meta instanceof ForbricDamageableMeta damageable) {
+            stack.set(net.minecraft.core.component.DataComponents.DAMAGE, damageable.getDamage());
+            if (damageable.hasMaxDamage()) {
+                stack.set(net.minecraft.core.component.DataComponents.MAX_DAMAGE, damageable.getMaxDamage());
+            }
+        }
+        return true;
     }
 
     /**
