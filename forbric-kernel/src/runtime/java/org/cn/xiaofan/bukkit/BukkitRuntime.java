@@ -15,8 +15,8 @@ import java.nio.file.Path;
  * <p>The kernel reaches this by string and reflection ({@code BukkitBridgeLauncher}), because the kernel's boot
  * half names no game or Bukkit type. That is the same seam the kernel uses for its own game side.
  *
- * <p>The signatures here are a contract: {@code start(Path, Path, ClassLoader)} and {@code stop()}. Changing them
- * means changing {@code BukkitBridgeLauncher} in the same breath.
+ * <p>The signatures here are a contract: {@code start(Path, Path, ClassLoader, Object)} and {@code stop()}.
+ * Changing them means changing {@code BukkitBridgeLauncher} in the same breath.
  */
 public final class BukkitRuntime {
 
@@ -43,33 +43,21 @@ public final class BukkitRuntime {
 	public static BukkitRuntime start(Path pluginsFolder, Path dataFolder, ClassLoader loader, Object server)
 			throws Exception {
 		BridgeBootstrap bridge = BridgeBootstrap.start(pluginsFolder, dataFolder, loader, server);
+		// Armed LAST, once the plugins are loaded and the server the events are raised against exists.
+		//
+		// The seam itself needed no call here: the kernel's transformer (BukkitInteractInjector) put the call
+		// into ServerPlayerGameMode's and ServerGamePacketListenerImpl's own methods, so what is left for this
+		// side is the half that names org.bukkit. Nothing subscribes to a loader's event bus, which is the
+		// point: a plugin's @EventHandler now depends on net.minecraft.* only.
+		ForbricInteractHook.arm(new ForbricInteractDispatch(bridge.server()));
 		return new BukkitRuntime(bridge);
 	}
 
-	/** Disables every plugin, in reverse enable order. */
+	/** Disables every plugin, in reverse enable order, and stops raising events while it does. */
 	public void stop() {
+		// Disarmed first: a plugin's onDisable runs inside bridge.stop(), and an interaction raised after the
+		// manager has begun tearing down would report a failure that is this side's, not the plugin's.
+		ForbricInteractHook.disarm();
 		bridge.stop();
-	}
-
-	/**
-	 * Subscribes the game-to-Bukkit event forwards, so a plugin's {@code @EventHandler} is actually
-	 * invoked.
-	 *
-	 * <p>Separate from {@link #start} because it is a caller-side concern: this class's own entry
-	 * point is reached through the boot side, which names no game type and therefore holds no
-	 * {@code IEventBus} to hand over. The kernel's game-side lifecycle has one at server start and
-	 * calls this immediately afterwards. A bridge whose forwards never install still LOADS plugins
-	 * and still runs their commands — it simply never tells them about an interaction, which is the
-	 * silent half-failure this method exists to end.
-	 *
-	 * @param neoBus NeoForge's {@code IEventBus}, typed {@code Object} because the caller is
-	 *               game-side code that must not force this seam's signature to name a NeoForge type
-	 */
-	public void installGameEvents(Object neoBus) {
-		org.bukkit.plugin.PluginManager manager = bridge.server().getPluginManager();
-		if (!(manager instanceof ForbricPluginManager plugins)) {
-			return;
-		}
-		BukkitInteractBridge.install(neoBus, bridge.server(), plugins);
 	}
 }

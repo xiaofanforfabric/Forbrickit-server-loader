@@ -755,6 +755,12 @@ public final class KernelBoot {
 		// MinecraftForge's ItemStack.useOn posts NeoForge's ITEM_AFTER_BLOCK phase again, and its Item.useOn calls go
 		// through one ItemStack relay that Fabric's ItemEvents.USE_ON wraps (MixinRelocatedCall moves the injector).
 		chain.register(TransformPhase.COREMOD, new net.forbric.kernel.transform.ItemUseOnInjector());
+		// Bukkit's PlayerInteractEvent is raised by the GAME's own interaction methods, not by subscribing to a
+		// loader's bus: the bridge's only net.neoforged.* dependency used to be that relay. The injected calls land
+		// on the bridge's game-side seam (org.cn.xiaofan.bukkit.ForbricInteractHook), which names no Bukkit type,
+		// so a server with no Paper API on its classpath still links every class the game calls. Registered after
+		// DuplicateLambdaPruneInjector, as this phase's order is asserted.
+		chain.register(TransformPhase.COREMOD, new net.forbric.kernel.transform.BukkitInteractInjector());
 		// NeoForge's furnace tick calls MinecraftForge's instance canBurn/consumeFuel/burn as static; the ticked furnace
 		// is the receiver MinecraftForge's own tick uses.
 		chain.register(TransformPhase.COREMOD, new net.forbric.kernel.transform.FurnaceTickCallsInjector());
