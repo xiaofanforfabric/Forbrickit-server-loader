@@ -1,0 +1,40 @@
+# An item's metadata, as org.bukkit.inventory.meta.ItemMeta.
+#
+# The interface has ~113 methods and this bridge answers a handful: a name, lore, the persistent data
+# container, and (in the Damageable subclass) the damage value. Everything else refuses by name.
+#
+# Why the display name and lore are the ones implemented: they are what a plugin sets on its own item to
+# make it recognisable, and they are the two that go through the Adventure-to-game component translation.
+# They are also the two that make `getItemMeta()` usable at all — a plugin's first act after obtaining a
+# meta is almost always to name the item.
+#
+# `displayName(Component)` and `lore(List)` are declared by the interface but are `default` methods that
+# funnel into `displayName()`/`setDisplayName(String)`-shaped calls; the ones with bodies here are the
+# abstract pair the defaults reach.
+#
+# `@template` means the body is written in the template.
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.inventory.meta.ItemMeta
+class: ForbricItemMeta
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricItemMeta.java
+template: ForbricItemMeta.java.in
+
+[methods]
+customName = @template
+customName(1) = @template
+hasCustomName = @template
+itemName = @template
+itemName(1) = @template
+getDisplayName = @template
+setDisplayName(1) = @template
+lore = @template
+lore(1) = @template
+getLore = @template
+hasLore = @template
+getPersistentDataContainer = @template
+getItemName = @template
+setItemName(1) = @template
+setVersion(1) = @template
+clone = @template

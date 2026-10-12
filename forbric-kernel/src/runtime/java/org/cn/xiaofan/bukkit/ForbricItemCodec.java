@@ -146,17 +146,75 @@ final class ForbricItemCodec {
         }
     }
 
-    /** The game's stack behind a plugin's item, materialised if the plugin built it from a material. */
+    /**
+     * The game's stack behind a plugin's item, materialised if the plugin built it from a material.
+     *
+     * <h2>Why a plain {@code ItemStack} has to be unwrapped</h2>
+     *
+     * <p>{@code new ItemStack(Material.FISHING_ROD)} — the constructor every traditional plugin uses —
+     * does not produce a {@link ForbricItemStack}. It produces an object of the API's own class, whose
+     * private {@code craftDelegate} field is set to whatever {@code Material.asItemType()
+     * .createItemStack()} returned, which IS one of ours. The design is deliberate: every method on the
+     * API's class forwards to that delegate, so the plugin's object and this bridge's object are the
+     * same item seen through two types.
+     *
+     * <p>So a handler that only checked {@code instanceof ForbricItemStack} refused exactly the items a
+     * plugin builds for itself — which is most of them, and always the interesting ones. An inventory
+     * adding one threw, and the message told the plugin to use {@code ItemStack.of(...)}, which it had
+     * every right not to.
+     *
+     * <p>The field is read reflectively because it is private and has no accessor anywhere in the API.
+     * That is safe here for the same reason {@code PluginCommand}'s constructor was: the class and this
+     * bridge come from the same paper-api jar on the same loader, so the lookup cannot resolve to a
+     * different class than the objects in hand.
+     */
     private static ItemStack gameOf(org.bukkit.inventory.ItemStack stack) {
-        if (stack instanceof ForbricItemStack) {
-            return ((ForbricItemStack) stack).toGame();
+        if (stack instanceof ForbricItemStack ours) {
+            return ours.toGame();
         }
-        // A stack of the API's own class that did not come from this bridge: it has a delegate of
-        // its own or none at all, and neither is ours to read. Refusing names the problem instead
-        // of encoding an item whose components silently went missing.
+        org.bukkit.inventory.ItemStack delegate = delegateOf(stack);
+        if (delegate instanceof ForbricItemStack ours) {
+            // The plugin's own object, unwrapped to the one this bridge can read. The delegate is where
+            // every call on the outer object lands, so it is the item the game would actually receive.
+            return ours.toGame();
+        }
+        if (delegate != null && delegate != stack) {
+            // A delegate this bridge did not build either. It has its own idea of what the item is, and
+            // encoding it here would write components that disagree with it.
+            return gameOf(delegate);
+        }
+        // Nothing this bridge can read: an item from another implementation, or one whose delegate was
+        // never set. Refusing names the problem instead of encoding an item whose components silently
+        // went missing.
         throw new UnsupportedOperationException(
                         "[Forbric/Bukkit] cannot read an ItemStack this bridge did not create;"
                                         + " build items with ItemStack.of(...) or take them from an inventory");
+    }
+
+    /**
+     * The {@code craftDelegate} of an API {@code ItemStack}, or null when it has none.
+     *
+     * <p>Cached after the first lookup: a plugin gives an inventory hundreds of items in a loop, and
+     * resolving the field once per item would make reflection the cost of the operation.
+     */
+    private static java.lang.reflect.Field delegateField;
+
+    private static org.bukkit.inventory.ItemStack delegateOf(org.bukkit.inventory.ItemStack stack) {
+        try {
+            if (delegateField == null) {
+                java.lang.reflect.Field field =
+                                org.bukkit.inventory.ItemStack.class.getDeclaredField("craftDelegate");
+                field.setAccessible(true);
+                delegateField = field;
+            }
+            Object delegate = delegateField.get(stack);
+            return delegate instanceof org.bukkit.inventory.ItemStack inner ? inner : null;
+        } catch (ReflectiveOperationException | RuntimeException unavailable) {
+            // The field moved or is not reachable on this build. Answering null makes the caller refuse
+            // by name, which is the honest outcome — better than a stack trace about reflection inside
+            // someone's inventory operation.
+            return null;
+        }
     }
 
     /**

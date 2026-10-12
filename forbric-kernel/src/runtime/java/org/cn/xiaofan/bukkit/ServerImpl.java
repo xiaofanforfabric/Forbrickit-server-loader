@@ -48,6 +48,15 @@ final class ServerImpl implements org.bukkit.Server {
 	 */
 	private final net.minecraft.server.MinecraftServer minecraft;
 
+	/**
+	 * The region, global and async schedulers.
+	 *
+	 * <p>One instance for the server's life rather than one per call: it owns the timer threads, and
+	 * handing out a fresh one per {@code getRegionScheduler()} would leak a thread pool every time a plugin
+	 * asked. The tasks it holds belong to plugins, so it is also what a shutdown has to stop.
+	 */
+	private final ForbricSchedulers schedulers;
+
 	ServerImpl(java.util.logging.Logger logger, org.bukkit.plugin.PluginManager pluginManager,
 			java.nio.file.Path pluginsFolder, String version, net.minecraft.server.MinecraftServer minecraft) {
 		this.logger = logger;
@@ -55,6 +64,7 @@ final class ServerImpl implements org.bukkit.Server {
 		this.pluginsFolder = pluginsFolder;
 		this.version = version;
 		this.minecraft = minecraft;
+		this.schedulers = new ForbricSchedulers(this);
 	}
 
 	/**
@@ -73,8 +83,21 @@ final class ServerImpl implements org.bukkit.Server {
 		this.commandMap = new org.bukkit.command.SimpleCommandMap(this, new java.util.HashMap<>());
 		// Bukkit's manager for the events and permissions, wrapped so the six methods that read its
 		// plugin list are answered from the handles the bridge actually loaded.
-		this.pluginManager = new ForbricPluginManager(
-				new org.bukkit.plugin.SimplePluginManager(this, this.commandMap), handles, this);
+		// Bukkit's manager for the events and permissions, wrapped so the methods that read its
+		// plugin list are answered from the handles the bridge actually loaded.
+		org.bukkit.plugin.SimplePluginManager simple =
+				new org.bukkit.plugin.SimplePluginManager(this, this.commandMap);
+		ForbricPluginManager manager = new ForbricPluginManager(simple, handles, this);
+		// SimplePluginManager is a SHADOW: 29 of its methods forward to this public field, which
+		// nothing fills in -- on Paper the server jar assigns it a CraftBukkit implementation this
+		// bridge does not have. Left null, the very first registerEvents from a plugin dies on a
+		// NullPointerException inside SimplePluginManager and the plugin fails to enable.
+		//
+		// Pointing it back at the wrapper closes the loop: ForbricPluginManager implements every
+		// PluginManager method, and the few it delegates are the ones SimplePluginManager really
+		// implements itself, so the forward terminates.
+		simple.paperPluginManager = manager;
+		this.pluginManager = manager;
 	}
 
 	/**
@@ -387,27 +410,62 @@ final class ServerImpl implements org.bukkit.Server {
 
 	@Override
 	public org.bukkit.entity.Player getPlayer(java.lang.String arg0) {
-		throw notYet("getPlayer");
+		// Bukkit's contract: an exact name wins, and only when there is none does a unique prefix
+		// match answer. A prefix matching more than one player is ambiguous and must NOT be guessed,
+		// which is why matchPlayer is consulted rather than a first-hit search.
+		org.bukkit.entity.Player exact = getPlayerExact(arg0);
+		if (exact != null) {
+			return exact;
+		}
+		java.util.List<org.bukkit.entity.Player> matches = matchPlayer(arg0);
+		return matches.size() == 1 ? matches.get(0) : null;
 	}
 
 	@Override
 	public org.bukkit.entity.Player getPlayerExact(java.lang.String arg0) {
-		throw notYet("getPlayerExact");
+		if (minecraft == null || arg0 == null) {
+			return null;
+		}
+		// Compared case-insensitively because the game's own player-name commands do, and a plugin
+		// accepting only the exact casing would refuse a name the server itself accepts.
+		for (net.minecraft.server.level.ServerPlayer player : minecraft.getPlayerList().getPlayers()) {
+			if (player.getScoreboardName().equalsIgnoreCase(arg0)) {
+				return ForbricPlayer.of(player, this);
+			}
+		}
+		return null;
 	}
 
 	@Override
 	public java.util.List<org.bukkit.entity.Player> matchPlayer(java.lang.String arg0) {
-		throw notYet("matchPlayer");
+		java.util.List<org.bukkit.entity.Player> matches = new java.util.ArrayList<>();
+		if (minecraft == null || arg0 == null) {
+			return matches;
+		}
+		for (net.minecraft.server.level.ServerPlayer player : minecraft.getPlayerList().getPlayers()) {
+			if (player.getScoreboardName().toLowerCase(java.util.Locale.ROOT)
+					.startsWith(arg0.toLowerCase(java.util.Locale.ROOT))) {
+				matches.add(ForbricPlayer.of(player, this));
+			}
+		}
+		return matches;
 	}
 
 	@Override
 	public org.bukkit.entity.Player getPlayer(java.util.UUID arg0) {
-		throw notYet("getPlayer");
+		if (minecraft == null || arg0 == null) {
+			return null;
+		}
+		net.minecraft.server.level.ServerPlayer player = minecraft.getPlayerList().getPlayer(arg0);
+		return player == null ? null : ForbricPlayer.of(player, this);
 	}
 
 	@Override
 	public java.util.UUID getPlayerUniqueId(java.lang.String arg0) {
-		throw notYet("getPlayerUniqueId");
+		// Online only, which is what the game's name lookup can answer. An offline player has no
+		// connection to read a profile from, and inventing an id would let a plugin key a map by it.
+		org.bukkit.entity.Player online = getPlayerExact(arg0);
+		return online == null ? null : online.getUniqueId();
 	}
 
 	@Override
@@ -525,9 +583,28 @@ final class ServerImpl implements org.bukkit.Server {
 		return logger;
 	}
 
-	@Override
-	public org.bukkit.command.PluginCommand getPluginCommand(java.lang.String arg0) {
-		throw notYet("getPluginCommand");
+/**
+         * The command a plugin declared in its {@code plugin.yml}, by the name the caller asked for.
+         *
+         * <p>This is what {@code JavaPlugin.getCommand(name)} calls, and it is the traditional way a plugin
+         * connects an executor to a declaration: {@code getCommand("x").setExecutor(...)}. It reads the same
+         * map {@link ForbricDeclaredCommands} filled, so the answer here and the command the dispatcher runs
+         * are the same object.
+         *
+         * <p>The argument arrives lower-cased from {@code JavaPlugin} and is looked up as-is. A Bukkit lookup
+         * also accepts the {@code plugin:label} form, which the map already holds (the fallback prefix is the
+         * plugin's name), so a name that only matches under that prefix still resolves.
+         *
+         * <p>Only a {@code PluginCommand} is returned: the map may hold the vanilla commands too, and
+         * handing one of those back as a plugin command would let a plugin retarget a game command.
+         */
+        @Override
+        public org.bukkit.command.PluginCommand getPluginCommand(java.lang.String arg0) {
+                if (commandMap == null || arg0 == null) {
+                        return null;
+                }
+                org.bukkit.command.Command command = commandMap.getCommand(arg0.toLowerCase(java.util.Locale.ROOT));
+                return command instanceof org.bukkit.command.PluginCommand pluginCommand ? pluginCommand : null;
 	}
 
 	@Override
@@ -830,9 +907,23 @@ final class ServerImpl implements org.bukkit.Server {
 		throw notYet("getSpawnLimit");
 	}
 
+	/**
+	 * Whether the calling thread is the server's own tick thread.
+	 *
+	 * <p><b>Asked of the game, not assumed.</b> This used to return {@code true} unconditionally, which was
+	 * true for every command and event and wrong for anything else: a plugin's async task, a Netty IO
+	 * thread or a shutdown hook all got "yes, you are the main thread". A Bukkit plugin uses this to decide
+	 * whether it may touch the world directly, so answering yes on a thread the game is not ticking meant
+	 * a plugin wrote to the world from a foreign thread with no warning.
+	 *
+	 * <p>{@code isSameThread} is the game's own answer and compares against the thread its tick loop runs
+	 * on, which is the definition Bukkit's method wants. A null server (the wiring fault reported at
+	 * startup) keeps the old permissive answer, because with no game there is no tick thread to compare
+	 * against and refusing would break plugins that only read the API's own state.
+	 */
 	@Override
 	public boolean isPrimaryThread() {
-		return true;
+		return minecraft == null || minecraft.isSameThread();
 	}
 
 	@Override
@@ -1088,7 +1179,14 @@ final class ServerImpl implements org.bukkit.Server {
 
 	@Override
 	public boolean suggestPlayerNamesWhenNullTabCompletions() {
-		throw notYet("suggestPlayerNamesWhenNullTabCompletions");
+		// true, which is what Paper's own config defaults to and what the game already does for its
+		// own commands: a completer that answers nothing leaves the player-name suggestion in place.
+		//
+		// This is not a cosmetic switch. Command.tabComplete0 asks THIS before it suggests anything, so
+		// throwing here (what the bridge used to do) turned every completion whose plugin completer
+		// answered null into a failed completion packet -- the client's TAB key went dead and the
+		// server logged a warning per keystroke. Answering true restores the vanilla behaviour.
+		return true;
 	}
 
 	@Override
@@ -1148,57 +1246,75 @@ final class ServerImpl implements org.bukkit.Server {
 
 	@Override
 	public io.papermc.paper.threadedregions.scheduler.RegionScheduler getRegionScheduler() {
-		throw notYet("getRegionScheduler");
+		return schedulers.region();
 	}
 
 	@Override
 	public io.papermc.paper.threadedregions.scheduler.AsyncScheduler getAsyncScheduler() {
-		throw notYet("getAsyncScheduler");
+		return schedulers.async();
 	}
 
 	@Override
 	public io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler getGlobalRegionScheduler() {
-		throw notYet("getGlobalRegionScheduler");
+		return schedulers.global();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.World arg0, io.papermc.paper.math.Position arg1) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.World arg0, io.papermc.paper.math.Position arg1, int arg2) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.Location arg0) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.Location arg0, int arg1) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.World arg0, int arg1, int arg2) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.World arg0, int arg1, int arg2, int arg3) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.World arg0, int arg1, int arg2, int arg3, int arg4) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
 	}
 
 	@Override
 	public boolean isOwnedByCurrentRegion(org.bukkit.entity.Entity arg0) {
-		throw notYet("isOwnedByCurrentRegion");
+		return ownedByCurrentRegion();
+	}
+
+	/**
+	 * Whether the calling thread may touch a given region.
+	 *
+	 * <p><b>On this server the answer is "am I on the server thread", and every coordinate argument is
+	 * ignored.</b> That is not a shortcut: region ownership exists so a Folia region thread can be told
+	 * apart from every other one, and this bridge runs the game on ONE thread. That thread owns every
+	 * region there is, so the question "does the current thread own the region containing (x, z)" has
+	 * the same answer for every coordinate — the thread's own identity.
+	 *
+	 * <p>The practical effect is the one a plugin needs. A Folia-aware plugin guards its world work with
+	 * {@code if (server.isOwnedByCurrentRegion(loc)) runNow(); else schedule();}, and on a single-threaded
+	 * server the guard is TRUE while a command or event handler is running — which is exactly the case
+	 * where doing the work inline is correct and scheduling it would only add a tick of latency.
+	 */
+	private boolean ownedByCurrentRegion() {
+		return isPrimaryThread();
 	}
 
 	@Override

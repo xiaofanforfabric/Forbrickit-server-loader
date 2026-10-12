@@ -428,6 +428,14 @@ def load_table(path: Path) -> dict:
                 raise SystemExit(f'{path}:{number}: expected `key: value`')
             key, _, value = line.partition(':')
             table[key.strip()] = value.strip()
+    # `skip:` names methods the generated class must NOT emit, because it extends a class that already
+    # answers them. Without it a subclass of another generated class re-declares every inherited method as
+    # a refusal, which silently overrides the parent's real implementations — the symptom is a subclass
+    # where a method that works on the parent throws on the child, with nothing in either file to say why.
+    if 'skip' in table:
+        table['skip'] = {name.strip() for name in table['skip'].split(',') if name.strip()}
+    else:
+        table['skip'] = set()
     for required in ('interface', 'class', 'file'):
         if required not in table:
             raise SystemExit(f'{path}: missing `{required}:`')
@@ -519,6 +527,10 @@ def main(argv=None):
     for signature in signatures:
         name, _, parameters, _ = signature_parts(signature)
         arity = len([p for p in parameters.split(',') if p.strip()])
+        if name in table['skip']:
+            # The superclass answers this one; emitting it here would override that answer with a refusal.
+            skipped.append(name)
+            continue
         entry, body, names = lookup(remaining, name, arity, parameters)
         if entry is None and arity == 0:
             entry, body, names = lookup(remaining, name, 0, parameters)

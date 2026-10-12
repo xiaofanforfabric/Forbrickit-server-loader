@@ -1,0 +1,158 @@
+/*
+ * Forbric Bukkit bridge — a living entity, as {@code org.bukkit.entity.LivingEntity}.
+ * *** GENERATED FILE — DO NOT EDIT ***
+ *
+ * Produced by tools/gen_stub.py from tools/stubs/ForbricLivingEntity.table. Edits belong in the table or
+ * this template.
+ */
+package {{package}};
+
+/**
+ * A mob, an animal, a player-as-a-mob — anything with health, as a plugin sees it.
+ *
+ * <h2>Why the bridge needs its own wrapper for this</h2>
+ *
+ * <p>{@code LivingEntity} extends {@code Entity}, so at first glance this class could just be a method on
+ * the entity wrapper. It cannot, and the reason is {@code instanceof}:
+ *
+ * <pre>{@code
+ * for (Entity entity : world.getNearbyEntities(center, r, r, r)) {
+ *     if (!(entity instanceof LivingEntity living)) continue;   // <-- here
+ *     living.damage(power, shooter);
+ * }
+ * }</pre>
+ *
+ * <p>That shape is how essentially every plugin applies area damage, and it is the one idiom this bridge
+ * has to satisfy. A wrapper that implements only {@code Entity} fails the test — silently, because
+ * {@code instanceof} is not an error — so the loop skips every mob and the blast hurts nobody, with no
+ * exception anywhere to explain it.
+ *
+ * <p>So the type hierarchy is mirrored: {@code ForbricEntity} wraps the game's {@code Entity},
+ * {@code ForbricLivingEntity} extends it and implements {@code LivingEntity}, and
+ * {@code ForbricEntity.of} hands back the narrower one when the game's object is a
+ * {@code net.minecraft.world.entity.LivingEntity}. This is why {@code ForbricEntity} is no longer
+ * {@code final}.
+ *
+ * <h2>Health and damage live on a supertype</h2>
+ *
+ * <p>{@code getHealth}, {@code setHealth} and {@code damage} are declared by
+ * {@code org.bukkit.entity.Damageable}, which {@code LivingEntity} extends. The generator collects
+ * inherited methods, so they are declared in the table under the interface that owns them and appear here
+ * with their own bodies — a plugin calling {@code living.getHealth()} reaches a real answer.
+ *
+ * <h2>What refuses, and why</h2>
+ *
+ * <p>Everything else in the interface's ~118 methods refuses by name. That is the point of the
+ * generator: an attribute, an equipment slot or an effect this bridge does not model answers with a
+ * message naming the method, rather than with a plausible value a plugin would act on.
+ */
+class {{class}} extends ForbricEntity implements {{interface}} {
+
+    /**
+     * The same game object as the superclass holds, but typed as a living entity.
+     *
+     * <p>Kept separately because the game's {@code LivingEntity} API is not on {@code Entity} — health,
+     * damage and healing all need this type, and casting the superclass's field at each use would hide
+     * the fact that the two are the same object.
+     */
+    private final net.minecraft.world.entity.LivingEntity living;
+
+    {{class}}(net.minecraft.world.entity.LivingEntity living, ServerImpl server) {
+        super(living, server);
+        this.living = living;
+    }
+
+    /** The wrapped entity, for the bridge's own use by the event layer. */
+    net.minecraft.world.entity.LivingEntity livingEntity() {
+        return living;
+    }
+
+    private static UnsupportedOperationException notYet(String what) {
+        return new UnsupportedOperationException(
+                "[Forbric/Bukkit] LivingEntity." + what + "() is not implemented by this bridge yet");
+    }
+
+    /**
+     * How much health this entity has left.
+     *
+     * <p>Read through on every call, which is the {@code LivingEntity} contract: the value changes as the
+     * game ticks, and a cached one would report the health a plugin saw when it first asked.
+     */
+    @Override
+    public double getHealth() {
+        return living.getHealth();
+    }
+
+    /**
+     * Sets health directly.
+     *
+     * <p>Distinct from {@link #damage(double)} in a way plugins rely on: this writes the number, so armour,
+     * absorption and a damage event are all bypassed. That is what "damage that ignores armour" means in
+     * a plugin, and it is why the healing and the clamp are applied here rather than delegated — the game
+     * would step in and undo them.
+     */
+    @Override
+    public void setHealth(double health) {
+        // The game's own clamp is 0..max and it refuses a value outside it, so a plugin passing a
+        // negative number would otherwise be silently ignored rather than killing the entity.
+        float clamped = (float) Math.max(0.0, Math.min(health, getMaxHealth()));
+        living.setHealth(clamped);
+    }
+
+    /** This entity's maximum health, which for a player is the attribute the game tracks. */
+    @Override
+    public double getMaxHealth() {
+        return living.getMaxHealth();
+    }
+
+    /**
+     * Hurts this entity by an amount, attributed to nobody in particular.
+     *
+     * <p>The game's own hurt path is used, so armour, enchantments, absorption and the damage event all
+     * apply — which is what a plugin calling {@code damage(n)} expects, and the reason
+     * {@link #setHealth(double)} exists separately for the case where they should not.
+     */
+    @Override
+    public void damage(double amount) {
+		// Cast the null: Damageable declares damage(double, Entity) and damage(double, DamageSource), and
+		// a bare null matches both, which javac rejects as ambiguous.
+		damage(amount, (org.bukkit.entity.Entity) null);
+    }
+    /**
+     * Hurts this entity, attributed to another.
+     *
+     * <p>The source matters beyond credit: the game builds the damage type from it, and a player-attributed
+     * hit is the one that drops experience and triggers a death message naming them. A null or unknown
+     * source becomes the generic damage type, which is exactly what "nobody in particular did this" is.
+     */
+    @Override
+    public void damage(double amount, org.bukkit.entity.Entity source) {
+        if (amount <= 0) {
+            // Zero and negative damage are nothing; the game would treat them as a no-op, and skipping
+            // here avoids firing a damage event that reports no damage.
+            return;
+        }
+        net.minecraft.world.damagesource.DamageSources sources =
+                server().minecraft() == null ? null : server().minecraft().overworld().damageSources();
+        if (sources == null) {
+            // No running server to build a damage source from. Writing health directly keeps the call's
+            // effect rather than dropping it, and is the same thing setHealth would do.
+            setHealth(getHealth() - amount);
+            return;
+        }
+        living.hurt(sources.generic(), (float) amount);
+    }
+
+    /** Absorption hearts, which the game tracks as a separate pool from health. */
+    @Override
+    public double getAbsorptionAmount() {
+        return living.getAbsorptionAmount();
+    }
+
+    /** Sets the absorption pool. */
+    @Override
+    public void setAbsorptionAmount(double amount) {
+        living.setAbsorptionAmount((float) Math.max(0.0, amount));
+    }
+
+{{methods}}}
