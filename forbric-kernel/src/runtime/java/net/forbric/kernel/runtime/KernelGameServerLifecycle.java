@@ -93,7 +93,11 @@ public final class KernelGameServerLifecycle {
 					// Bukkit/Paper plugins, once the world is up: a plugin's onEnable may touch a world, and the
 					// registries it reads are settled by now. Started from here rather than at boot because the
 					// bridge names game types through the API, and those are only safe to touch on this thread.
-					startBukkitBridgeIfInstalled(server);
+					// The bus goes with the call so the bridge can subscribe its game-event forwards at
+					// the same moment: a bridge that loads plugins but installs no forwards is one whose
+					// plugins never hear about an interaction, and that half-state has no log line of
+					// its own to reveal it.
+					startBukkitBridgeIfInstalled(server, neoBus);
 				});
 	}
 
@@ -103,8 +107,12 @@ public final class KernelGameServerLifecycle {
 	 * <p>{@code ServerStartedEvent} fires per server, and a dedicated server has one; an integrated server fires
 	 * it again for each world opened in the same process, so the guard is not decoration — without it a second
 	 * world would load every plugin a second time and stack their listeners.
+	 *
+	 * @param neoBus NeoForge's {@code IEventBus}, forwarded to the bridge so it can subscribe its game-event
+	 *               forwards. Typed {@code Object} to match {@link #installStarted}, its only caller.
 	 */
-	private static void startBukkitBridgeIfInstalled(net.minecraft.server.MinecraftServer server) {
+	private static void startBukkitBridgeIfInstalled(net.minecraft.server.MinecraftServer server,
+			Object neoBus) {
 		if (!BUKKIT_BRIDGE_STARTED.compareAndSet(false, true)) return;
 
 		// The directory the kernel recorded from --gameDir, not the process working directory: a launcher is
@@ -124,7 +132,36 @@ public final class KernelGameServerLifecycle {
 		if (handle != null) {
 			runningBridge = handle;
 			ForbricLog.info("[Forbric/Bukkit] plugin bridge is running");
+						// Subscribing the game-to-Bukkit forwards is a SEPARATE step, and a bridge
+						// that skips it still loads plugins and runs their commands while never
+						// raising a single event — the failure is silent, and it is precisely the
+						// one this call ends.
+						installBukkitGameEvents(handle, neoBus);
+				}
 		}
+
+		/**
+		 * Turns the bridge's game-event forwards on, if the bridge exposes the entry point.
+		 *
+		 * <p>Reflective because the bridge is a separate seam: its classes are reachable by name
+		 * from here, but binding to {@code BukkitRuntime} directly would put the plugin bridge on
+		 * this class's own linkage, and a build without the bridge (it is appended conditionally)
+		 * would then fail to load the whole server lifecycle.
+		 */
+		private static void installBukkitGameEvents(Object handle, Object neoBus) {
+				try {
+						handle.getClass().getMethod("installGameEvents", Object.class).invoke(handle, neoBus);
+						ForbricLog.info("[Forbric/Bukkit] game-event forwards installed; "
+										+ "plugin @EventHandler listeners now receive interactions");
+				} catch (NoSuchMethodException absent) {
+						ForbricLog.warn("[Forbric/Bukkit] the bridge has no installGameEvents entry — plugins "
+										+ "load and their commands run, but no plugin @EventHandler will ever fire");
+				} catch (Throwable failure) {
+						Throwable cause = failure instanceof java.lang.reflect.InvocationTargetException wrapped
+										? wrapped.getCause() : failure;
+						ForbricLog.warn("[Forbric/Bukkit] could not install the game-event forwards; "
+										+ "plugin @EventHandler listeners will not fire: %s", String.valueOf(cause));
+			}
 	}
 
 	/** Set once the bridge is up, so {@link #installStopping} can shut it down in order. */

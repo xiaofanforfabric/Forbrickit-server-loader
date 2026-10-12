@@ -20,12 +20,12 @@ package org.cn.xiaofan.bukkit;
  * {@code CommandSourceStack.getEntityOrThrow()} has to return one, and an argument resolver needs the game's own
  * entity back. A wrapper that keeps the {@code net.minecraft} object is the only thing that can satisfy both.
  */
-final class ForbricEntity implements org.bukkit.entity.Entity {
+class ForbricEntity implements org.bukkit.entity.Entity {
 
         private final net.minecraft.world.entity.Entity entity;
         private final ServerImpl server;
 
-        private ForbricEntity(net.minecraft.world.entity.Entity entity, ServerImpl server) {
+        ForbricEntity(net.minecraft.world.entity.Entity entity, ServerImpl server) {
                 this.entity = entity;
                 this.server = server;
         }
@@ -40,12 +40,36 @@ final class ForbricEntity implements org.bukkit.entity.Entity {
                 if (entity instanceof net.minecraft.server.level.ServerPlayer player) {
                         return ForbricPlayer.of(player, server);
                 }
+                // A bolt is still an Entity, but Bukkit has a richer interface for it and a plugin that
+                // strikes lightning then asks what it got expects a LightningStrike back. Returning the
+                // plain wrapper would fail that check with no hint as to why.
+                if (entity instanceof net.minecraft.world.entity.LightningBolt bolt) {
+                        return new ForbricLightningStrike(bolt, server);
+                }
+                // A living entity gets the richer interface for the same reason: a plugin asks every
+                // candidate from a nearby-entity search `instanceof LivingEntity` before damaging it, and
+                // the plain wrapper fails that test — so a blast that should hurt the mob next to it
+                // would silently skip every one of them.
+                if (entity instanceof net.minecraft.world.entity.LivingEntity living) {
+                        return new ForbricLivingEntity(living, server);
+                }
                 return new ForbricEntity(entity, server);
         }
 
         /** The game's own entity, for the bridge's use — command arguments resolve against it. */
         net.minecraft.world.entity.Entity entity() {
                 return entity;
+        }
+
+        /**
+         * The server this wrapper belongs to, for a subclass that has to build another wrapper.
+         *
+         * <p>Package-visible rather than private for exactly that reason: a specialised entity
+         * ({@code ForbricLightningStrike}) hands its cause back as a player, and building one needs the
+         * server the way every other wrapper does.
+         */
+        ServerImpl server() {
+                return server;
         }
 
         private static UnsupportedOperationException notYet(String what) {

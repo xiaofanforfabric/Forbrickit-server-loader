@@ -1,0 +1,40 @@
+# A living entity, as org.bukkit.entity.LivingEntity.
+#
+# A subclass of ForbricEntity, not a second wrapper: LivingEntity extends Entity, and everything a plugin
+# does with a mob — its position, its UUID, its world — is the entity API. Extending reuses all of it;
+# delegating would mean 150 forwards, each one a place for the two wrappers to drift apart.
+#
+# Why this class has to exist at all: a plugin that damages everything in a blast radius writes
+# `entity instanceof LivingEntity` before it calls damage(), and the plain Entity wrapper fails that test.
+# The failure is silent — no exception, no log line, just a blast that hurts nothing.
+#
+# Damage and health come from org.bukkit.entity.Damageable, which LivingEntity extends; the generator
+# collects inherited methods too, so those are declared here by the interface that owns them.
+#
+# `@template` means the body is written in the template.
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.entity.LivingEntity
+class: ForbricLivingEntity
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricLivingEntity.java
+template: ForbricLivingEntity.java.in
+
+[methods]
+getHealth = @template
+setHealth(1) = @template
+getMaxHealth = @template
+damage(1) = @template
+damage(2) = @template
+getAbsorptionAmount = @template
+setAbsorptionAmount(1) = @template
+isDead = @template
+getUniqueId = @template
+getLocation = @template
+getWorld = @template
+getType = @template
+isValid = @template
+spigot = @template
+getPassengers = @template
+addPassenger(1) = @template
+removePassenger(1) = @template

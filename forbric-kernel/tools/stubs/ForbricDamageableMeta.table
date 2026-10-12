@@ -1,0 +1,32 @@
+# An ItemMeta that carries a damage value, as org.bukkit.inventory.meta.Damageable.
+#
+# A subclass of ForbricItemMeta, mirroring Bukkit's own hierarchy: Damageable extends ItemMeta, and a plugin
+# reaches the damage value through an `instanceof Damageable` guard that doubles as "is this a tool".
+#
+# The methods listed here have bodies in the template. The inherited ItemMeta methods are answered by the
+# parent class, so they are not repeated — the generator collects this interface's own abstract methods,
+# and only the damage ones are new.
+#
+# `@template` means the body is written in the template.
+# A method with overloads is named `name(arity)`; a bare `name` covers the no-argument form only.
+
+interface: org.bukkit.inventory.meta.Damageable
+class: ForbricDamageableMeta
+package: org.cn.xiaofan.bukkit
+file: src/runtime/java/org/cn/xiaofan/bukkit/ForbricDamageableMeta.java
+template: ForbricDamageableMeta.java.in
+
+# Methods the parent class already answers. The generated class extends ForbricItemMeta, so
+# re-declaring these here would override the parent's real bodies with refusals — the subclass
+# would then throw on a display name the parent answers correctly.
+skip: addAttributeModifier,addEnchant,addItemFlags,clone,customName,displayName,getAsComponentString,getAsString,getAttributeModifiers,getCanDestroy,getCanPlaceOn,getCustomModelData,getCustomModelDataComponent,getCustomTagContainer,getDamageResistant,getDamageResistantTypes,getDestroyableKeys,getDisplayName,getDisplayNameComponent,getEnchantLevel,getEnchantable,getEnchantmentGlintOverride,getEnchants,getEquippable,getFood,getItemFlags,getItemModel,getItemName,getJukeboxPlayable,getLocalizedName,getLore,getLoreComponents,getMaxStackSize,getPersistentDataContainer,getPlaceableKeys,getRarity,getTool,getTooltipStyle,getUseCooldown,getUseRemainder,hasAttributeModifiers,hasConflictingEnchant,hasCustomModelData,hasCustomModelDataComponent,hasCustomName,hasDamageResistant,hasDestroyableKeys,hasDisplayName,hasEnchant,hasEnchantable,hasEnchantmentGlintOverride,hasEnchants,hasEquippable,hasFood,hasItemFlag,hasItemModel,hasItemName,hasJukeboxPlayable,hasLocalizedName,hasLore,hasMaxStackSize,hasPlaceableKeys,hasRarity,hasTool,hasTooltipStyle,hasUseCooldown,hasUseRemainder,isFireResistant,isGlider,isHideTooltip,isUnbreakable,itemName,lore,removeAttributeModifier,removeEnchant,removeEnchantments,removeItemFlags,serialize,setAttributeModifiers,setCanDestroy,setCanPlaceOn,setCustomModelData,setCustomModelDataComponent,setDamageResistant,setDamageResistantTypes,setDestroyableKeys,setDisplayName,setDisplayNameComponent,setEnchantable,setEnchantmentGlintOverride,setEquippable,setFireResistant,setFood,setGlider,setHideTooltip,setItemModel,setItemName,setJukeboxPlayable,setLocalizedName,setLore,setLoreComponents,setMaxStackSize,setPlaceableKeys,setRarity,setTool,setTooltipStyle,setUnbreakable,setUseCooldown,setUseRemainder,setVersion
+
+[methods]
+hasDamage = @template
+getDamage = @template
+setDamage(1) = @template
+hasDamageValue = @template
+resetDamage = @template
+hasMaxDamage = @template
+getMaxDamage = @template
+setMaxDamage(1) = @template

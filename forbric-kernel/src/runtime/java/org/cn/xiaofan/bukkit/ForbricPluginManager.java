@@ -150,52 +150,193 @@ final class ForbricPluginManager implements org.bukkit.plugin.PluginManager {
     // Everything below is Bukkit's own behaviour, forwarded unchanged. Listed one by one rather
     // than reached through a proxy so that a method Paper adds shows up here as a compile error
     // instead of being answered with an InvocationTargetException at runtime.
-    // ---------------------------------------------------------------------------------------------
+    //
+    // A method is only forwarded when SimplePluginManager IMPLEMENTS it. The ones it forwards —
+    // `loadPlugin`, `loadPlugins(File[])`, `disablePlugins`, `clearPlugins`, `callEvent` — are
+    // answered here instead, because its forward leads back to this object and would recurse.
+    // ------------------------------------------------------------------------------------------
 
     @Override
     public void registerInterface(Class<? extends org.bukkit.plugin.PluginLoader> loader)
                     throws IllegalArgumentException {
+        // SimplePluginManager implements this one itself: it seeds its file-association table.
         delegate.registerInterface(loader);
     }
 
+    /**
+     * Loads a plugin file.
+     *
+     * <p>Refused. {@code SimplePluginManager} forwards this to {@code paperPluginManager} — this object — so
+     * delegating would recurse, and the bridge has no loader to load a plugin with anyway: it loads plugins
+     * its own way, through {@link PluginHandle}, because {@link PluginClassLoader} is what puts
+     * {@code org.bukkit} and {@code net.minecraft} in a plugin's reach. A plugin dropped into
+     * {@code plugins/} is picked up at startup.
+     */
     @Override
     public org.bukkit.plugin.Plugin loadPlugin(java.io.File file)
                     throws org.bukkit.plugin.InvalidPluginException,
                     org.bukkit.plugin.InvalidDescriptionException,
                     org.bukkit.plugin.UnknownDependencyException {
-        return delegate.loadPlugin(file);
+        throw new UnsupportedOperationException(
+                        "[Forbric/Bukkit] PluginManager.loadPlugin() is not supported by this bridge: plugins"
+                                        + " are loaded from the plugins/ folder at startup by the bridge itself."
+                                        + " Put the jar there and restart.");
     }
 
+    /** The one-argument form is real code in {@code SimplePluginManager}; it delegates to the refused form. */
     @Override
     public org.bukkit.plugin.Plugin[] loadPlugins(java.io.File directory) {
         return delegate.loadPlugins(directory);
     }
 
+    /** Refused for the same reason as {@link #loadPlugin}: the array form is a forward, not an implementation. */
     @Override
     public org.bukkit.plugin.Plugin[] loadPlugins(java.io.File[] files) {
-        return delegate.loadPlugins(files);
+        throw new UnsupportedOperationException(
+                        "[Forbric/Bukkit] PluginManager.loadPlugins(File[]) is not supported by this bridge:"
+                                        + " plugins are loaded from the plugins/ folder at startup by the bridge"
+                                        + " itself. Put the jars there and restart.");
     }
 
+    /**
+     * Disables every plugin this bridge loaded, in reverse load order.
+     *
+     * <p>Answered here because {@code SimplePluginManager} forwards it. Reverse order matters: a plugin that
+     * depends on another must be disabled before the one it depends on.
+     */
     @Override
     public void disablePlugins() {
-        delegate.disablePlugins();
+        for (int i = handles.size() - 1; i >= 0; i--) {
+            PluginHandle handle = handles.get(i);
+            if (handle.plugin() != null && handle.plugin().isEnabled()) {
+                handle.disable();
+            }
+        }
     }
 
+    /**
+     * Clears the loaded-plugin bookkeeping.
+     *
+     * <p>Refused because {@code SimplePluginManager} forwards it, so delegating would recurse, and because the
+     * bridge's list of loaded plugins belongs to the bridge rather than to a plugin.
+     */
     @Override
     public void clearPlugins() {
-        delegate.clearPlugins();
+        throw new UnsupportedOperationException(
+                        "[Forbric/Bukkit] PluginManager.clearPlugins() is not supported by this bridge: the"
+                                        + " list of loaded plugins belongs to the bridge, not to a plugin");
     }
 
-    @Override
-    public void callEvent(org.bukkit.event.Event event) throws IllegalStateException {
-        delegate.callEvent(event);
-    }
 
+    /**
+     * Registers every {@code @EventHandler} a listener declares.
+     *
+     * <p>Answered here rather than forwarded, and the reason is a trap: {@code SimplePluginManager}'s own
+     * {@code registerEvents} is a null forward (see the class comment), so delegating to it threw a
+     * {@code NullPointerException} the moment a plugin called this in {@code onEnable} — which made the
+     * plugin fail to load at all.
+     *
+     * <p>The scan is the documented Bukkit algorithm: walk the listener's class and its superclasses, take
+     * every method carrying {@code @EventHandler}, and register it through {@code registerEvent} — which is
+     * the one event method {@code SimplePluginManager} really implements, so it is safe to delegate to.
+     */
     @Override
     public void registerEvents(org.bukkit.event.Listener listener, org.bukkit.plugin.Plugin plugin) {
-        delegate.registerEvents(listener, plugin);
+        if (listener == null || plugin == null) {
+            throw new IllegalArgumentException(
+                            "[Forbric/Bukkit] registerEvents needs a listener and its plugin");
+        }
+        // The whole hierarchy, because a listener commonly extends a base class that holds shared handlers.
+        for (Class<?> type = listener.getClass(); type != null && type != Object.class;
+                        type = type.getSuperclass()) {
+            for (java.lang.reflect.Method method : type.getDeclaredMethods()) {
+                org.bukkit.event.EventHandler annotation =
+                                method.getAnnotation(org.bukkit.event.EventHandler.class);
+                if (annotation == null) {
+                    continue;
+                }
+                method.setAccessible(true);
+                // The event class is the handler's single parameter. A method annotated but taking anything
+                // else is a mistake in the plugin, and Bukkit reports it the same way we do.
+                Class<?>[] parameters = method.getParameterTypes();
+                if (parameters.length != 1 || !org.bukkit.event.Event.class.isAssignableFrom(parameters[0])) {
+                    throw new IllegalStateException(
+                                    "[Forbric/Bukkit] " + method + " has @EventHandler but its only parameter"
+                                                    + " is not an Event");
+                }
+                @SuppressWarnings("unchecked")
+                Class<? extends org.bukkit.event.Event> event =
+                                (Class<? extends org.bukkit.event.Event>) parameters[0];
+                org.bukkit.plugin.EventExecutor executor = (called, eventObject) -> {
+                    try {
+                        method.invoke(listener, eventObject);
+                    } catch (java.lang.reflect.InvocationTargetException wrapped) {
+                        // The handler's own exception is what the plugin author needs to see; the
+                        // reflection wrapper around it is noise.
+                        Throwable cause = wrapped.getCause() == null ? wrapped : wrapped.getCause();
+                        throw new java.lang.reflect.UndeclaredThrowableException(cause);
+                    } catch (IllegalAccessException unreachable) {
+                        throw new java.lang.IllegalStateException(
+                                        "[Forbric/Bukkit] " + method + " could not be invoked", unreachable);
+                    }
+                };
+                registerEvent(event, listener, annotation.priority(), executor, plugin,
+                                annotation.ignoreCancelled());
+            }
+        }
     }
 
+    /**
+     * Delivers an event to every handler registered for its class.
+     *
+     * <p>Answered here rather than forwarded, because {@link SimplePluginManager}'s own {@code callEvent} is a
+     * null forward — and even with the field set, it dispatches from ITS registration table, which is the one
+     * this class cannot fill (see the class comment). The bridge's own table is
+     * {@link #registrations}, so the two must be kept together: registrations are recorded here and delivered
+     * here.
+     *
+     * <p>Ordering is Bukkit's: highest priority first, and among equal priorities the registration order.
+     * A handler registered with {@code ignoreCancelled} is skipped once the event is cancelled.
+     */
+    @Override
+    public void callEvent(org.bukkit.event.Event event) throws IllegalStateException {
+        if (event == null) {
+            return;
+        }
+        if (event.isAsynchronous() && server.isPrimaryThread()) {
+            throw new IllegalStateException(
+                            event.getClass().getSimpleName() + " may not be triggered from the primary thread");
+        }
+        java.util.List<Registration> forThisEvent = new java.util.ArrayList<>();
+        synchronized (registrations) {
+            for (Registration registration : registrations) {
+                if (registration.event().isInstance(event)) {
+                    forThisEvent.add(registration);
+                }
+            }
+        }
+        // Bukkit's ordering: HIGHEST first (it is declared first in EventPriority), then by registration order
+        // for equal priorities. A stable sort keeps that second guarantee.
+        forThisEvent.sort(java.util.Comparator.comparingInt(r -> r.priority().ordinal()));
+        for (Registration registration : forThisEvent) {
+            if (event instanceof org.bukkit.event.Cancellable cancellable
+                            && cancellable.isCancelled() && !registration.ignoreCancelled()) {
+                continue;
+            }
+            try {
+                registration.executor().execute(registration.listener(), event);
+            } catch (Throwable thrown) {
+                // One handler failing must not stop the others -- Bukkit reports and continues.
+                org.bukkit.plugin.Plugin plugin = registration.plugin();
+                server.getLogger().log(java.util.logging.Level.SEVERE,
+                                "[Forbric/Bukkit] " + plugin.getName() + " threw while handling "
+                                                + event.getClass().getSimpleName(),
+                                thrown);
+            }
+        }
+    }
+
+    /** The five-argument form is real code in {@code SimplePluginManager}, which then calls the six-argument one. */
     @Override
     public void registerEvent(Class<? extends org.bukkit.event.Event> event, org.bukkit.event.Listener listener,
                     org.bukkit.event.EventPriority priority, org.bukkit.plugin.EventExecutor executor,
@@ -203,12 +344,46 @@ final class ForbricPluginManager implements org.bukkit.plugin.PluginManager {
         delegate.registerEvent(event, listener, priority, executor, plugin);
     }
 
+    /**
+     * Registers one handler for one event class.
+     *
+     * <p>Answered here because {@code SimplePluginManager}'s own form forwards to {@code paperPluginManager}
+     * — this object — so delegating would recurse. The bookkeeping is the bridge's: a list of registrations
+     * per event class, consulted by {@link #callEvent} (which uses {@code SimplePluginManager}'s real
+     * dispatcher, so the two must agree on what is registered).
+     *
+     * <p>{@code ignoreCancelled} is honoured at dispatch time, which is where Bukkit honours it too: the
+     * registration records whether a cancelled event should still reach this handler.
+     */
     @Override
     public void registerEvent(Class<? extends org.bukkit.event.Event> event, org.bukkit.event.Listener listener,
                     org.bukkit.event.EventPriority priority, org.bukkit.plugin.EventExecutor executor,
                     org.bukkit.plugin.Plugin plugin, boolean ignoreCancelled) {
-        delegate.registerEvent(event, listener, priority, executor, plugin, ignoreCancelled);
+        if (event == null || listener == null || executor == null || plugin == null) {
+            throw new IllegalArgumentException(
+                            "[Forbric/Bukkit] registerEvent needs an event class, a listener, an executor and its"
+                                            + " plugin");
+        }
+        registrations.add(new Registration(event, listener, priority, executor, plugin, ignoreCancelled));
     }
+
+    /**
+     * One handler registration, as the bridge recorded it.
+     *
+     * <p>Kept per event class rather than pushed into {@code SimplePluginManager}'s own structures, because
+     * those are reached only through the forwards that are null here.
+     */
+    private record Registration(Class<? extends org.bukkit.event.Event> event,
+                    org.bukkit.event.Listener listener,
+                    org.bukkit.event.EventPriority priority,
+                    org.bukkit.plugin.EventExecutor executor,
+                    org.bukkit.plugin.Plugin plugin,
+                    boolean ignoreCancelled) {
+    }
+
+    /** Every handler registered through this manager, in registration order. */
+    private final java.util.List<Registration> registrations =
+                    java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
     @Override
     public org.bukkit.permissions.Permission getPermission(String name) {
@@ -230,90 +405,193 @@ final class ForbricPluginManager implements org.bukkit.plugin.PluginManager {
         return null;
     }
 
+    /**
+     * The permissions this bridge knows about, by name.
+     *
+     * <p>Filled from each plugin's {@code plugin.yml} as it loads, and by {@link #addPermission}. This is the
+     * bridge's own table rather than {@code SimplePluginManager}'s because that one lives on the far side of
+     * the {@code paperPluginManager} forward (see the class comment) and would be a null dereference.
+     */
+    private final java.util.Map<String, org.bukkit.permissions.Permission> permissions =
+                    java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
+
+    /**
+     * Which permissible subscribed to which permission, and to the two default sets.
+     *
+     * <p>Bukkit needs this for live permission recalculation: when a permission's default changes, everyone
+     * subscribed to it must be re-asked. No plugin this bridge has run calls it, but the interface demands
+     * an answer, and answering with an empty set is better than a null dereference.
+     */
+    private final java.util.Map<String, java.util.Set<org.bukkit.permissions.Permissible>> subscriptions =
+                    java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
+
+    private final java.util.Set<org.bukkit.permissions.Permissible> defaultOpSubscriptions =
+                    java.util.Collections.synchronizedSet(
+                                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+
+    private final java.util.Set<org.bukkit.permissions.Permissible> defaultNotOpSubscriptions =
+                    java.util.Collections.synchronizedSet(
+                                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+
     @Override
     public void addPermission(org.bukkit.permissions.Permission perm) {
-        delegate.addPermission(perm);
+        if (perm != null) {
+            permissions.put(perm.getName().toLowerCase(java.util.Locale.ROOT), perm);
+            recalculatePermissionDefaults(perm);
+        }
+    }
+
+    @Override
+    public void addPermissions(java.util.List<org.bukkit.permissions.Permission> perms) {
+        if (perms != null) {
+            for (org.bukkit.permissions.Permission perm : perms) {
+                addPermission(perm);
+            }
+        }
     }
 
     @Override
     public void removePermission(org.bukkit.permissions.Permission perm) {
-        delegate.removePermission(perm);
+        if (perm != null) {
+            permissions.remove(perm.getName().toLowerCase(java.util.Locale.ROOT));
+        }
     }
 
     @Override
     public void removePermission(String name) {
-        delegate.removePermission(name);
-    }
-
-    @Override
-    public java.util.Set<org.bukkit.permissions.Permission> getDefaultPermissions(boolean op) {
-        return delegate.getDefaultPermissions(op);
-    }
-
-    @Override
-    public void recalculatePermissionDefaults(org.bukkit.permissions.Permission perm) {
-        delegate.recalculatePermissionDefaults(perm);
-    }
-
-    @Override
-    public void subscribeToPermission(String permission, org.bukkit.permissions.Permissible permissible) {
-        delegate.subscribeToPermission(permission, permissible);
-    }
-
-    @Override
-    public void unsubscribeFromPermission(String permission, org.bukkit.permissions.Permissible permissible) {
-        delegate.unsubscribeFromPermission(permission, permissible);
-    }
-
-    @Override
-    public java.util.Set<org.bukkit.permissions.Permissible> getPermissionSubscriptions(String permission) {
-        return delegate.getPermissionSubscriptions(permission);
-    }
-
-    @Override
-    public void subscribeToDefaultPerms(boolean op, org.bukkit.permissions.Permissible permissible) {
-        delegate.subscribeToDefaultPerms(op, permissible);
-    }
-
-    @Override
-    public void unsubscribeFromDefaultPerms(boolean op, org.bukkit.permissions.Permissible permissible) {
-        delegate.unsubscribeFromDefaultPerms(op, permissible);
-    }
-
-    @Override
-    public java.util.Set<org.bukkit.permissions.Permissible> getDefaultPermSubscriptions(boolean op) {
-        return delegate.getDefaultPermSubscriptions(op);
+        if (name != null) {
+            permissions.remove(name.toLowerCase(java.util.Locale.ROOT));
+        }
     }
 
     @Override
     public java.util.Set<org.bukkit.permissions.Permission> getPermissions() {
-        return delegate.getPermissions();
+        return new java.util.LinkedHashSet<>(permissions.values());
+    }
+
+    /**
+     * The permissions whose default matches {@code op}, which is what "default permissions" means.
+     *
+     * <p>{@code TRUE} and {@code FALSE} count for both answers, because a permission defaulted to either is
+     * granted (or refused) to everyone including operators.
+     */
+    @Override
+    public java.util.Set<org.bukkit.permissions.Permission> getDefaultPermissions(boolean op) {
+        java.util.Set<org.bukkit.permissions.Permission> result = new java.util.LinkedHashSet<>();
+        for (org.bukkit.permissions.Permission permission : permissions.values()) {
+            org.bukkit.permissions.PermissionDefault fallback = permission.getDefault();
+            boolean applies = fallback == org.bukkit.permissions.PermissionDefault.TRUE
+                            || fallback == org.bukkit.permissions.PermissionDefault.FALSE
+                            || (fallback == org.bukkit.permissions.PermissionDefault.OP) == op
+                            || (fallback == org.bukkit.permissions.PermissionDefault.NOT_OP) != op;
+            if (applies) {
+                result.add(permission);
+            }
+        }
+        return result;
+    }
+
+    /** Re-asks everyone subscribed to a permission, which is why the subscription sets exist at all. */
+    @Override
+    public void recalculatePermissionDefaults(org.bukkit.permissions.Permission perm) {
+        if (perm == null) {
+            return;
+        }
+        java.util.Set<org.bukkit.permissions.Permissible> subscribed =
+                        getPermissionSubscriptions(perm.getName());
+        for (org.bukkit.permissions.Permissible permissible : subscribed) {
+            permissible.recalculatePermissions();
+        }
+        for (org.bukkit.permissions.Permissible permissible : getDefaultPermSubscriptions(perm.getDefault()
+                        == org.bukkit.permissions.PermissionDefault.OP
+                        || perm.getDefault() == org.bukkit.permissions.PermissionDefault.TRUE)) {
+            permissible.recalculatePermissions();
+        }
     }
 
     @Override
-    public boolean useTimings() {
-        return delegate.useTimings();
+    public void subscribeToPermission(String permission, org.bukkit.permissions.Permissible permissible) {
+        if (permission == null || permissible == null) {
+            return;
+        }
+        String key = permission.toLowerCase(java.util.Locale.ROOT);
+        synchronized (subscriptions) {
+            subscriptions.computeIfAbsent(key, ignored -> java.util.Collections.synchronizedSet(
+                            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>())))
+                            .add(permissible);
+        }
     }
 
     @Override
-    public boolean isTransitiveDependency(io.papermc.paper.plugin.configuration.PluginMeta dependant,
-                    io.papermc.paper.plugin.configuration.PluginMeta dependee) {
-        return delegate.isTransitiveDependency(dependant, dependee);
+    public void unsubscribeFromPermission(String permission, org.bukkit.permissions.Permissible permissible) {
+        if (permission == null || permissible == null) {
+            return;
+        }
+        java.util.Set<org.bukkit.permissions.Permissible> set =
+                        subscriptions.get(permission.toLowerCase(java.util.Locale.ROOT));
+        if (set != null) {
+            set.remove(permissible);
+        }
     }
 
     @Override
-    public void overridePermissionManager(org.bukkit.plugin.Plugin plugin,
-                    io.papermc.paper.plugin.PermissionManager permissionManager) {
-        delegate.overridePermissionManager(plugin, permissionManager);
+    public java.util.Set<org.bukkit.permissions.Permissible> getPermissionSubscriptions(String permission) {
+        if (permission == null) {
+            return java.util.Set.of();
+        }
+        java.util.Set<org.bukkit.permissions.Permissible> set =
+                        subscriptions.get(permission.toLowerCase(java.util.Locale.ROOT));
+        return set == null ? java.util.Set.of() : new java.util.LinkedHashSet<>(set);
     }
 
     @Override
-    public void addPermissions(java.util.List<org.bukkit.permissions.Permission> permissions) {
-        delegate.addPermissions(permissions);
+    public void subscribeToDefaultPerms(boolean op, org.bukkit.permissions.Permissible permissible) {
+        if (permissible != null) {
+            (op ? defaultOpSubscriptions : defaultNotOpSubscriptions).add(permissible);
+        }
+    }
+
+    @Override
+    public void unsubscribeFromDefaultPerms(boolean op, org.bukkit.permissions.Permissible permissible) {
+        if (permissible != null) {
+            (op ? defaultOpSubscriptions : defaultNotOpSubscriptions).remove(permissible);
+        }
+    }
+
+    @Override
+    public java.util.Set<org.bukkit.permissions.Permissible> getDefaultPermSubscriptions(boolean op) {
+        return new java.util.LinkedHashSet<>(op ? defaultOpSubscriptions : defaultNotOpSubscriptions);
     }
 
     @Override
     public void clearPermissions() {
-        delegate.clearPermissions();
+        permissions.clear();
+        subscriptions.clear();
+        defaultOpSubscriptions.clear();
+        defaultNotOpSubscriptions.clear();
+    }
+
+    /** Whether a permission name is one this bridge knows, which is what {@link #getPermission} answers. */
+    @Override
+    public void overridePermissionManager(org.bukkit.plugin.Plugin plugin,
+                    io.papermc.paper.plugin.PermissionManager permissionManager) {
+        // The bridge has one permission table for the whole server, which is what a server-side stack looks
+        // like; a per-plugin override would need Paper's loader to be the one loading the plugin.
+        throw new UnsupportedOperationException(
+                        "[Forbric/Bukkit] PluginManager.overridePermissionManager() is not supported by this"
+                                        + " bridge: it has a single permission table for the whole server");
+    }
+
+    /** Whether one plugin's metadata declares another as its transitive dependency. */
+    @Override
+    public boolean isTransitiveDependency(io.papermc.paper.plugin.configuration.PluginMeta dependant,
+                    io.papermc.paper.plugin.configuration.PluginMeta dependee) {
+        return false;
+    }
+
+    /** Whether the server is collecting timing data. This bridge has no timing recorder, so it is false. */
+    @Override
+    public boolean useTimings() {
+        return false;
     }
 }
