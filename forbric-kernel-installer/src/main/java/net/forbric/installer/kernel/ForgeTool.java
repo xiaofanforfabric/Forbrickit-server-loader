@@ -61,6 +61,9 @@ final class ForgeTool {
 	void runJar(Path toolJar, List<String> args, String label) throws IOException {
 		List<String> cmd = new ArrayList<>();
 		cmd.add(javaBin());
+		// A fresh JVM does not inherit the parent's -D flags, and these tools resolve their own
+		// artifacts through a Maven client that reads system properties.
+		cmd.addAll(ChildProxyEnvironment.jvmArguments());
 		cmd.add("-jar");
 		cmd.add(toolJar.toString());
 		cmd.addAll(args);
@@ -90,6 +93,9 @@ final class ForgeTool {
 	int exec(List<String> cmd, String label, List<String> tail) throws IOException {
 		log.accept("[patched] " + label + " …");
 		ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
+		// The Forge tool fetches its own inputs, and it is a child: see ChildProxyEnvironment for why
+		// the parent's -D flags are not enough.
+		ChildProxyEnvironment.apply(pb.environment());
 		Process p = pb.start();
 		try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
 			String line;

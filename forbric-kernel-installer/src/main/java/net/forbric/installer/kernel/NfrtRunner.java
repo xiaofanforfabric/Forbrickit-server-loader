@@ -114,6 +114,10 @@ final class NfrtRunner {
 				// its own cache directory and has nothing to maintain.
 				"--disable-cache-maintenance",
 				"--write-result=" + Pins.NFRT_RESULT + ":" + outJar));
+		// The parent's -D flags reach NFRT not at all — it is a fresh JVM with its own command line.
+		// NFRT resolves artifacts through a Maven client built from system properties, so the flags are
+		// added here rather than only in the environment.
+		cmd.addAll(1, ChildProxyEnvironment.jvmArguments());
 
 		log.accept("[neoform] building NeoForge's patched Minecraft (" + Pins.NFRT_RESULT + ") …");
 		List<String> tail = runAndCapture(cmd);
@@ -197,6 +201,11 @@ final class NfrtRunner {
 	 */
 	private List<String> runAndCapture(List<String> cmd) throws IOException {
 		ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
+		// NFRT downloads NeoForge's patched Minecraft itself, and it is a CHILD process: the -D the
+		// parent was started with never reaches it, so on a proxied network it goes direct and times
+		// out while the parent's own downloads succeed. Both spellings go in, because the tools
+		// differ on which they read.
+		ChildProxyEnvironment.apply(pb.environment());
 		Process p = pb.start();
 		List<String> tail = new ArrayList<>();
 		try (BufferedReader r = new BufferedReader(
