@@ -17,6 +17,7 @@ package org.cn.xiaofan.bukkit;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.ItemStack;
@@ -51,6 +52,9 @@ public final class ForbricInteractHook {
 
 		/** True when the swing is one the bridge refused (nothing to suppress in the game; the event is the point). */
 		boolean swing(ServerPlayer player);
+
+		/** True when the accepted use-item packet was refused by Bukkit. */
+		boolean useItemPacket(ServerPlayer player, InteractionHand hand);
 	}
 
 	private static volatile Sink sink;
@@ -92,5 +96,11 @@ public final class ForbricInteractHook {
 	public static boolean swing(ServerPlayer player) {
 		Sink installed = sink;
 		return installed != null && installed.swing(player);
+	}
+
+	/** {@code ServerGamePacketListenerImpl.handleUseItem} -- Bukkit {@code RIGHT_CLICK_AIR}. */
+	public static boolean useItemPacket(ServerPlayer player, ServerboundUseItemPacket packet) {
+		Sink installed = sink;
+		return installed != null && installed.useItemPacket(player, packet.getHand());
 	}
 }

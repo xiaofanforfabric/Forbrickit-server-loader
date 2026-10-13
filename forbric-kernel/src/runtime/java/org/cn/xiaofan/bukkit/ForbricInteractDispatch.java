@@ -97,6 +97,11 @@ final class ForbricInteractDispatch implements ForbricInteractHook.Sink {
 		return raise(Action.LEFT_CLICK_AIR, player, player.level(), null, InteractionHand.MAIN_HAND, null, null);
 	}
 
+	@Override
+	public boolean useItemPacket(ServerPlayer player, InteractionHand hand) {
+		return raise(Action.RIGHT_CLICK_AIR, player, player.level(), null, hand, null, null);
+	}
+
 	/**
 	 * Raises one {@code PlayerInteractEvent} and reports whether the game must not perform the action.
 	 *
@@ -107,6 +112,15 @@ final class ForbricInteractDispatch implements ForbricInteractHook.Sink {
 	private boolean raise(Action action, ServerPlayer player, Level level, ItemStack held, InteractionHand hand,
 			BlockPos pos, Direction face) {
 		if (manager == null) return false;
+		// Diagnostic for "the event never arrives" reports, which are otherwise indistinguishable from "the
+		// game never called this site". Off by default: it is one line per interaction, which is noise on a
+		// busy server. -Dforbric.debug turns it on. The line says which SITE fired, so a missing RIGHT_CLICK_AIR
+		// is answered by its absence here rather than guessed at from the plugin's own logging.
+		if (Boolean.getBoolean("forbric.debug")) {
+			server.getLogger().info("[Forbric/Bukkit] interact site raised: action=" + action
+					+ " hand=" + hand + " held=" + (held == null ? "<null>" : held.getItem())
+					+ " pos=" + pos + " face=" + face);
+		}
 		try {
 			org.bukkit.entity.Player bukkitPlayer = ForbricPlayer.of(player, server);
 			// The live hand stack, not a copy, so a plugin that mutates what it is handed mutates what

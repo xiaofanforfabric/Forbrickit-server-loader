@@ -88,6 +88,17 @@ class BukkitInteractInjectorExecutionTest {
 
 					public class ServerboundSwingPacket { }
 					"""),
+			Map.entry("net.minecraft.network.protocol.game.ServerboundUseItemPacket", """
+					package net.minecraft.network.protocol.game;
+
+					import net.minecraft.world.InteractionHand;
+
+					public class ServerboundUseItemPacket {
+						private final InteractionHand hand;
+						public ServerboundUseItemPacket(InteractionHand hand) { this.hand = hand; }
+						public InteractionHand getHand() { return hand; }
+					}
+					"""),
 			Map.entry(HOOK, """
 					package org.cn.xiaofan.bukkit;
 
@@ -99,10 +110,12 @@ class BukkitInteractInjectorExecutionTest {
 					import net.minecraft.world.item.ItemStack;
 					import net.minecraft.world.level.Level;
 					import net.minecraft.world.phys.BlockHitResult;
+					import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 
 					/** The seam's stand-in: counts what reaches it and answers what the test asked for. */
 					public final class ForbricInteractHook {
 						public static int calls;
+						public static int airPacketCalls;
 						private static boolean refuse;
 
 						/** Named for the behaviour rather than a field, so the test flips it through the seam. */
@@ -129,6 +142,12 @@ class BukkitInteractInjectorExecutionTest {
 							calls++;
 							return refuse;
 						}
+
+						public static boolean useItemPacket(ServerPlayer player, ServerboundUseItemPacket packet) {
+							calls++;
+							airPacketCalls++;
+							return refuse;
+						}
 					}
 					"""),
 			Map.entry(GAME_MODE, """
@@ -146,6 +165,8 @@ class BukkitInteractInjectorExecutionTest {
 					public class ServerPlayerGameMode {
 						public ServerPlayer player;
 						public static int breaks;
+						/** ABORT/STOP arrivals, counted so the START-only guard is proven not to fire on them. */
+						public static int aborts;
 
 						public ServerPlayerGameMode(ServerPlayer player) { this.player = player; }
 
@@ -161,6 +182,10 @@ class BukkitInteractInjectorExecutionTest {
 
 						public void handleBlockBreakAction(BlockPos pos, ServerboundPlayerActionPacket.Action action,
 								Direction face, int a, int b) {
+							if (action != ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK) {
+								aborts++;
+								return;
+							}
 							breaks++;
 						}
 					}
@@ -169,16 +194,26 @@ class BukkitInteractInjectorExecutionTest {
 					package net.minecraft.server.network;
 
 					import net.minecraft.network.protocol.game.ServerboundSwingPacket;
+					import net.minecraft.network.protocol.game.ServerboundUseItemPacket;
 					import net.minecraft.server.level.ServerPlayer;
 
 					public class ServerGamePacketListenerImpl {
 						public ServerPlayer player;
 						public static int swings;
+						public static int useItemPackets;
+						public boolean clientLoaded = true;
 
 						public ServerGamePacketListenerImpl(ServerPlayer player) { this.player = player; }
 
 						public void handleAnimate(ServerboundSwingPacket packet) {
 							swings++;
+						}
+
+						public boolean hasClientLoaded() { return clientLoaded; }
+
+						public void handleUseItem(ServerboundUseItemPacket packet) {
+							if (!hasClientLoaded()) return;
+							useItemPackets++;
 						}
 					}
 					"""));
@@ -208,6 +243,7 @@ class BukkitInteractInjectorExecutionTest {
 		Class<?> directionType = loader.loadClass("net.minecraft.core.Direction");
 		Class<?> actionType = loader.loadClass("net.minecraft.network.protocol.game.ServerboundPlayerActionPacket$Action");
 		Class<?> swingType = loader.loadClass("net.minecraft.network.protocol.game.ServerboundSwingPacket");
+		Class<?> useItemPacketType = loader.loadClass("net.minecraft.network.protocol.game.ServerboundUseItemPacket");
 		Class<?> hookType = loader.loadClass(HOOK);
 		Class<?> gameModeType = loader.loadClass(GAME_MODE);
 		Class<?> listenerType = loader.loadClass(LISTENER);
@@ -223,6 +259,7 @@ class BukkitInteractInjectorExecutionTest {
 		Object mode = InjectorExecution.construct(gameModeType, player);
 		Object listener = InjectorExecution.construct(listenerType, player);
 		Object packet = InjectorExecution.construct(swingType);
+		Object airPacket = InjectorExecution.construct(useItemPacketType, hand);
 
 		InjectorExecution.invokeStatic(hookType, "refuse", false);
 		assertEquals("SUCCESS", String.valueOf(InjectorExecution.invoke(mode, "useItemOn", player, level, stack, hand, hit)),
@@ -231,12 +268,26 @@ class BukkitInteractInjectorExecutionTest {
 		assertEquals("FAIL", String.valueOf(InjectorExecution.invoke(mode, "useItemOn", player, level, stack, hand, hit)),
 				"refused RIGHT_CLICK_BLOCK: the seam's answer is what the game returns");
 
+		// Air-right-click is now raised from the actual serverbound use-item packet handler, not the later
+		// ServerPlayerGameMode.useItem implementation detail. The hook is placed after the loaded-state gate:
+		// false means the packet is ignored as before; true means the plugin sees it on the game thread.
 		InjectorExecution.invokeStatic(hookType, "refuse", false);
-		assertEquals("CONSUME", String.valueOf(InjectorExecution.invoke(mode, "useItem", player, level, stack, hand)),
-				"nothing refused: useItem keeps its body");
+		InjectorExecution.invoke(listener, "handleUseItem", airPacket);
+		assertEquals(1, number(InjectorExecution.getStatic(listenerType, "useItemPackets")),
+				"allowed RIGHT_CLICK_AIR falls through to vanilla packet handling");
 		InjectorExecution.invokeStatic(hookType, "refuse", true);
-		assertEquals("FAIL", String.valueOf(InjectorExecution.invoke(mode, "useItem", player, level, stack, hand)),
-				"refused RIGHT_CLICK_AIR");
+		InjectorExecution.invoke(listener, "handleUseItem", airPacket);
+		assertEquals(1, number(InjectorExecution.getStatic(listenerType, "useItemPackets")),
+				"refused RIGHT_CLICK_AIR returns before the original packet handler body");
+		assertEquals(2, number(InjectorExecution.getStatic(hookType, "airPacketCalls")),
+				"each loaded use-item packet raises exactly one air-interaction event");
+
+		InjectorExecution.setField(listener, "clientLoaded", false);
+		InjectorExecution.invoke(listener, "handleUseItem", airPacket);
+		assertEquals(2, number(InjectorExecution.getStatic(hookType, "airPacketCalls")),
+				"a packet rejected by hasClientLoaded never reaches the Bukkit hook");
+		assertEquals(1, number(InjectorExecution.getStatic(listenerType, "useItemPackets")),
+				"unloaded connection remains ignored");
 
 		InjectorExecution.invokeStatic(hookType, "refuse", true);
 		InjectorExecution.invoke(mode, "handleBlockBreakAction", pos, startDestroy, north, 0, 0);
@@ -245,6 +296,19 @@ class BukkitInteractInjectorExecutionTest {
 		InjectorExecution.invokeStatic(hookType, "refuse", false);
 		InjectorExecution.invoke(mode, "handleBlockBreakAction", pos, startDestroy, north, 0, 0);
 		assertEquals(1, number(InjectorExecution.getStatic(gameModeType, "breaks")), "allowed: the break starts");
+
+		// The reason the guard is not at the head. ABORT and STOP share this body, and CraftBukkit raises
+		// LEFT_CLICK_BLOCK on the START edge only — a head insertion would raise it here too, and a plugin
+		// counting breaks would see its count double on every release.
+		int seamCallsBeforeAborts = number(InjectorExecution.getStatic(hookType, "calls"));
+		Object abortDestroy = constant(actionType, "ABORT_DESTROY_BLOCK");
+		Object stopDestroy = constant(actionType, "STOP_DESTROY_BLOCK");
+		InjectorExecution.invoke(mode, "handleBlockBreakAction", pos, abortDestroy, north, 0, 0);
+		InjectorExecution.invoke(mode, "handleBlockBreakAction", pos, stopDestroy, north, 0, 0);
+		assertEquals(2, number(InjectorExecution.getStatic(gameModeType, "aborts")),
+				"the stand-in's non-START branch is what ran, so the guard was skipped rather than the branch");
+		assertEquals(seamCallsBeforeAborts, number(InjectorExecution.getStatic(hookType, "calls")),
+				"ABORT/STOP must not reach the seam: LEFT_CLICK_BLOCK is raised on START only");
 
 		InjectorExecution.invokeStatic(hookType, "refuse", true);
 		InjectorExecution.invoke(listener, "handleAnimate", packet);
@@ -255,7 +319,7 @@ class BukkitInteractInjectorExecutionTest {
 		assertEquals(1, number(InjectorExecution.getStatic(listenerType, "swings")), "allowed: the swing is handled");
 
 		assertEquals(8, number(InjectorExecution.getStatic(hookType, "calls")),
-				"all four sites reach the seam — two right-click answers and two left-click vetoes");
+				"block, packet-air, block-break and swing sites each reach the seam on their intended paths");
 	}
 
 	/** The transform runs on every load of the class, so the second pass over its own output must be a no-op. */
