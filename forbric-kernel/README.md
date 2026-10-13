@@ -1,3 +1,19 @@
+> **This repository is PAUSED — no maintenance, and archival is under consideration.**
+>
+> Two separate reasons, and neither is a code bug:
+>
+> 1. **Upstream's author has drawn public controversy.** This repository forks that project. Its
+>    code is Apache-2.0 and this fork's Bukkit/Paper support is original work, but the association
+>    is not something this repository can separate itself from, and the fallout is not something it
+>    can absorb.
+> 2. **Upstream's maintainability is not what a downstream project needs.** Too many defects here
+>    have the shape "compiles, unit-tests pass, crashes on a real server" — frames that fail class
+>    verification, hooks that fire twice, seamless paths that silently never run. Following upstream
+>    means re-auditing its output on every sync, and that cost does not stop.
+>
+> So: no further commits are planned, issues and pull requests may go unanswered, and the repository
+> may be archived outright. The last working state remains here and remains usable.
+
 # Forbrickit Kernel
 
 English | [简体中文](README.zh-CN.md)
